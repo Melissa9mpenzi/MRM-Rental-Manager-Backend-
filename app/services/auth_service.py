@@ -22,7 +22,15 @@ class AuthService:
         user.password_hash = self.hash_password(password)
         db.commit()
 
-    def create_user(self, db: Session, payload: UserRegister, verification_token: str, token_expiry: datetime) -> User:
+    def create_user(
+        self,
+        db: Session,
+        payload: UserRegister,
+        verification_token: str,
+        token_expiry: datetime,
+        *,
+        verification_otp: Optional[str] = None,
+    ) -> User:
         user = User(
             email=payload.email,
             full_name=payload.full_name,
@@ -31,6 +39,8 @@ class AuthService:
             email_verified=False,
             verification_token=verification_token,
             verification_token_expiry=token_expiry,
+            verification_otp=verification_otp,
+            verification_otp_expiry=token_expiry if verification_otp else None,
         )
         db.add(user)
         db.commit()

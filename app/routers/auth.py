@@ -1,12 +1,20 @@
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 
+from app.config import settings
 from app.database import get_db
 from app.schemas.auth import (
-    UserRegister, UserLogin, TokenResponse, UserOut,
-    ForgotPasswordRequest, ResetPasswordRequest, VerifyEmailRequest,
+    UserRegister,
+    UserLogin,
+    TokenResponse,
+    UserOut,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    VerifyEmailTokenBody,
 )
 from app.services.auth_service import auth_service
 from app.services.email_service import (
@@ -21,6 +29,46 @@ from app.utils.response import success_response, error_response
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
+def _login_redirect(**params: str) -> str:
+    base = settings.frontend_base_url.rstrip("/")
+    q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items() if v is not None)
+    return f"{base}/login?{q}"
+
+
+def _expiry_utc(exp):
+    if not exp:
+        return None
+    if exp.tzinfo is None:
+        return exp.replace(tzinfo=timezone.utc)
+    return exp
+
+
+def _email_verification_secret_accepted(user: User, submitted: str, now: datetime) -> bool:
+    """True if submitted value matches the emailed link token or the 6-digit verification OTP (not expired)."""
+    submitted = (submitted or "").strip()
+    if not submitted:
+        return False
+    if user.verification_token and submitted == user.verification_token:
+        exp = _expiry_utc(user.verification_token_expiry)
+        if exp and now > exp:
+            return False
+        return True
+    digits = "".join(c for c in submitted if c.isdigit())
+    if len(digits) >= 6 and user.verification_otp and digits[:6] == (user.verification_otp or "")[:6]:
+        exp = _expiry_utc(user.verification_otp_expiry) or _expiry_utc(user.verification_token_expiry)
+        if exp and now > exp:
+            return False
+        return True
+    return False
+
+
+def _clear_email_verification_fields(user: User) -> None:
+    user.verification_token = None
+    user.verification_token_expiry = None
+    user.verification_otp = None
+    user.verification_otp_expiry = None
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -33,18 +81,21 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
         raise HTTPException(400, "An account with this email already exists.")
 
     token = generate_verification_token()
+    otp = generate_otp()
     expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
 
-    user = auth_service.create_user(db, payload, verification_token=token, token_expiry=expiry)
+    user = auth_service.create_user(
+        db, payload, verification_token=token, token_expiry=expiry, verification_otp=otp
+    )
 
-    sent = send_registration_verification_link(user.email, user.full_name, token)
+    sent = send_registration_verification_link(
+        user.email, user.full_name, token, api_base_url=settings.api_public_base_url, otp=otp
+    )
     if not sent:
-        # Still return success — user can request resend
-        # but log for admin
-        print(f"[WARN] Could not send verification email to {user.email}. Token: {token}")
+        print(f"[WARN] Could not send verification email to {user.email}. Token: {token}  OTP: {otp}")
 
     return {
-        "message": "Account created. Please check your email for a verification link.",
+        "message": "Account created. Check your email for a 6-digit code and verification link.",
         "email": user.email,
     }
 
@@ -57,27 +108,43 @@ def verify_email_link(email: str, token: str, db: Session = Depends(get_db)):
     
     user = db.query(User).filter(User.email == email).first()
     if not user:
-        return RedirectResponse(url=f"http://localhost:5174/login?error=account_not_found")
-    
+        return RedirectResponse(url=_login_redirect(error="account_not_found"))
+
     if user.email_verified:
-        return RedirectResponse(url=f"http://localhost:5174/login?message=already_verified")
+        return RedirectResponse(url=_login_redirect(message="already_verified"))
 
-    if not user.verification_token or user.verification_token != token:
-        return RedirectResponse(url=f"http://localhost:5174/login?error=invalid_token")
-
-    expiry = user.verification_token_expiry
-    if expiry:
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) > expiry:
-            return RedirectResponse(url=f"http://localhost:5174/login?error=token_expired")
+    now = datetime.now(timezone.utc)
+    if not _email_verification_secret_accepted(user, token, now):
+        exp = _expiry_utc(user.verification_token_expiry) or _expiry_utc(user.verification_otp_expiry)
+        if (user.verification_token or user.verification_otp) and exp and now > exp:
+            return RedirectResponse(url=_login_redirect(error="token_expired"))
+        return RedirectResponse(url=_login_redirect(error="invalid_token"))
 
     user.email_verified = True
-    user.verification_token = None
-    user.verification_token_expiry = None
+    _clear_email_verification_fields(user)
     db.commit()
 
-    return RedirectResponse(url=f"http://localhost:5174/login?verified=true&email={email}")
+    return RedirectResponse(url=_login_redirect(verified="true", email=email))
+
+
+@router.post("/verify-email", status_code=200)
+def verify_email_token(payload: VerifyEmailTokenBody, db: Session = Depends(get_db)):
+    """Same checks as the email link (GET), but returns JSON for SPA flows."""
+    user = db.query(User).filter(User.email == str(payload.email)).first()
+    if not user:
+        raise error_response("Account not found.", status_code=404)
+    if user.email_verified:
+        return success_response(message="Email was already verified.")
+    now = datetime.now(timezone.utc)
+    if not _email_verification_secret_accepted(user, payload.token, now):
+        exp = _expiry_utc(user.verification_token_expiry) or _expiry_utc(user.verification_otp_expiry)
+        if (user.verification_token or user.verification_otp) and exp and now > exp:
+            raise error_response("Verification code has expired. Register again or request a new email.", status_code=400)
+        raise error_response("Invalid verification code or link token.", status_code=400)
+    user.email_verified = True
+    _clear_email_verification_fields(user)
+    db.commit()
+    return success_response(message="Email verified. You can sign in.")
 
 
 # ── LOGIN ─────────────────────────────────────────────────────────
@@ -95,12 +162,14 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     return success_response(
         data={
             "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": tokens.get("token_type", "bearer"),
             "user": {
                 "id": user.id,
-                "name": user.full_name,
+                "full_name": user.full_name,
                 "email": user.email,
-                "role": user.role.value if hasattr(user.role, 'value') else user.role,
-            }
+                "role": user.role.value if hasattr(user.role, "value") else user.role,
+            },
         }
     )
 
@@ -188,8 +257,8 @@ def me(current_user: User = Depends(get_current_user)):
     return success_response(
         data={
             "id": current_user.id,
-            "name": current_user.full_name,
+            "full_name": current_user.full_name,
             "email": current_user.email,
-            "role": current_user.role.value if hasattr(current_user.role, 'value') else current_user.role,
+            "role": current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
         }
     )

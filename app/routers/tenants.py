@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
-from sqlalchemy.orm import Session
 from typing import Optional, List
+
+from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
+from sqlalchemy.orm import Session
 import shutil, os, uuid
 from datetime import date
 
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.schemas.tenant import TenantOut
+from app.schemas.tenant import TenantOut, TenantCreate, TenantUpdate
 from app.services.tenant_service import tenant_service
 from app.config import settings
-from app.utils.response import success_response, error_response
+from app.utils.response import success_response
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
@@ -36,8 +37,6 @@ def get_tenant(
 ):
     """Get single tenant with standardized response"""
     tenant = tenant_service.get_tenant(db, tenant_id, current_user.id)
-    if not tenant:
-        raise error_response("Tenant not found.", status_code=404)
     return success_response(data=tenant)
 
 
@@ -74,7 +73,7 @@ async def create_tenant(
             shutil.copyfileobj(deposit_receipt.file, f)
         deposit_receipt_path = f"/uploads/tenants/{fname}"
 
-    data = dict(
+    data = TenantCreate(
         unit_id=unit_id,
         full_name=full_name,
         phone=phone,
@@ -90,7 +89,7 @@ async def create_tenant(
         deposit_receipt_path=deposit_receipt_path,
         notes=notes,
     )
-    tenant = tenant_service.create_tenant(db, current_user.id, data)
+    tenant = tenant_service.create_tenant(db, data, current_user.id)
     return success_response(data=tenant, message="Tenant created successfully")
 
 
@@ -114,26 +113,35 @@ def update_tenant(
     current_user: User = Depends(get_current_user),
 ):
     """Update tenant with standardized response"""
-    tenant = tenant_service.get_tenant(db, tenant_id, current_user.id)
-    if not tenant:
-        raise error_response("Tenant not found.", status_code=404)
+    patch = {}
+    if unit_id is not None:
+        patch["unit_id"] = unit_id
+    if full_name is not None:
+        patch["full_name"] = full_name
+    if phone is not None:
+        patch["phone"] = phone
+    if email is not None:
+        patch["email"] = email
+    if national_id is not None:
+        patch["national_id"] = national_id
+    if emergency_contact_name is not None:
+        patch["emergency_contact_name"] = emergency_contact_name
+    if emergency_contact_phone is not None:
+        patch["emergency_contact_phone"] = emergency_contact_phone
+    if lease_start is not None:
+        patch["lease_start"] = date.fromisoformat(lease_start)
+    if lease_end is not None:
+        patch["lease_end"] = date.fromisoformat(lease_end)
+    if monthly_rent is not None:
+        patch["monthly_rent"] = monthly_rent
+    if deposit_amount is not None:
+        patch["deposit_amount"] = deposit_amount
+    if deposit_paid is not None:
+        patch["deposit_paid"] = deposit_paid
+    if notes is not None:
+        patch["notes"] = notes
 
-    data = {}
-    if unit_id is not None:       data["unit_id"] = unit_id
-    if full_name is not None:     data["full_name"] = full_name
-    if phone is not None:         data["phone"] = phone
-    if email is not None:         data["email"] = email
-    if national_id is not None:   data["national_id"] = national_id
-    if emergency_contact_name is not None:  data["emergency_contact_name"] = emergency_contact_name
-    if emergency_contact_phone is not None: data["emergency_contact_phone"] = emergency_contact_phone
-    if lease_start is not None:   data["lease_start"] = date.fromisoformat(lease_start)
-    if lease_end is not None:     data["lease_end"] = date.fromisoformat(lease_end)
-    if monthly_rent is not None:  data["monthly_rent"] = monthly_rent
-    if deposit_amount is not None: data["deposit_amount"] = deposit_amount
-    if deposit_paid is not None:  data["deposit_paid"] = deposit_paid
-    if notes is not None:         data["notes"] = notes
-
-    updated = tenant_service.update_tenant(db, tenant, data)
+    updated = tenant_service.update_tenant(db, tenant_id, TenantUpdate(**patch), current_user.id)
     return success_response(data=updated, message="Tenant updated successfully")
 
 
@@ -144,8 +152,5 @@ def move_out(
     current_user: User = Depends(get_current_user),
 ):
     """Move out tenant with standardized response"""
-    tenant = tenant_service.get_tenant(db, tenant_id, current_user.id)
-    if not tenant:
-        raise error_response("Tenant not found.", status_code=404)
-    result = tenant_service.move_out(db, tenant)
+    result = tenant_service.move_out_tenant(db, tenant_id, current_user.id)
     return success_response(data=result, message="Tenant moved out successfully")

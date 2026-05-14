@@ -15,8 +15,8 @@ class AuditLog(Base):
     action = Column(String(100), nullable=False)
     table_name = Column(String(50))
     record_id = Column(Integer)
-    old_value = Column(Text)  # JSON in MySQL
-    new_value = Column(Text)  # JSON in MySQL
+    old_value = Column(Text)  # JSON payload as text
+    new_value = Column(Text)  # JSON payload as text
     ip_address = Column(String(45))
     created_at = Column(DateTime, default=datetime.utcnow)
 

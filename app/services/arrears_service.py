@@ -28,6 +28,9 @@ def compute_tenant_balance(tenant: Tenant, as_of: date = None) -> dict:
     if tenant.status != TenantStatus.active:
         return {"months_due": 0, "total_due": Decimal("0"), "total_paid": Decimal("0"), "balance_due": Decimal("0"), "months_in_arrears": 0}
 
+    if tenant.monthly_rent is None:
+        return {"months_due": 0, "total_due": Decimal("0"), "total_paid": Decimal("0"), "balance_due": Decimal("0"), "months_in_arrears": 0}
+
     effective_end = min(tenant.lease_end, as_of) if tenant.lease_end else as_of
     months_due = months_between(tenant.lease_start, effective_end)
     total_due  = Decimal(str(float(tenant.monthly_rent))) * months_due
@@ -58,7 +61,7 @@ def get_arrears_list(db: Session, owner_id: int) -> list:
 
     tenants = (
         db.query(Tenant)
-        .options(joinedload(Tenant.payments), joinedload(Tenant.unit).joinedload(Unit.property))
+        .options(joinedload(Tenant.payments), joinedload(Tenant.unit).joinedload(Unit.parent_property))
         .filter(Tenant.owner_id == owner_id, Tenant.status == TenantStatus.active)
         .all()
     )
@@ -71,8 +74,8 @@ def get_arrears_list(db: Session, owner_id: int) -> list:
             "full_name":        t.full_name,
             "phone":            t.phone,
             "unit_number":      t.unit.unit_number if t.unit else None,
-            "property_name":    t.unit.property.name if t.unit and t.unit.property else None,
-            "property_id":      t.unit.property.id if t.unit and t.unit.property else None,
+            "property_name":    t.unit.parent_property.name if t.unit and t.unit.parent_property else None,
+            "property_id":      t.unit.parent_property.id if t.unit and t.unit.parent_property else None,
             "monthly_rent":     float(t.monthly_rent),
             **{k: float(v) if isinstance(v, Decimal) else v for k, v in bal.items()},
         })

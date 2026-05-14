@@ -3,6 +3,13 @@ from typing import Optional
 from datetime import datetime
 
 
+class VerifyEmailTokenBody(BaseModel):
+    """Verify signup email: paste the long link token or the 6-digit code from the registration email."""
+
+    email: EmailStr
+    token: str
+
+
 class UserRegister(BaseModel):
     full_name: str
     email: EmailStr

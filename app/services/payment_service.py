@@ -6,7 +6,7 @@ from fastapi import HTTPException
 
 from app.models.payment import Payment, PaymentType
 from app.models.tenant import Tenant
-from app.models.property import Unit, Property
+from app.models.property import Unit
 from app.schemas.payment import PaymentCreate, PaymentUpdate
 
 
@@ -16,19 +16,24 @@ MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec
 def _enrich(p: Payment) -> dict:
     tenant = p.tenant
     unit   = tenant.unit if tenant else None
-    prop   = unit.property if unit else None
-    return {
-        **p.__dict__,
-        "tenant_name":  tenant.full_name if tenant else None,
-        "unit_number":  unit.unit_number if unit else None,
-        "property_name": prop.name if prop else None,
-    }
+    prop   = unit.parent_property if unit else None
+    raw = {k: v for k, v in p.__dict__.items() if k != "_sa_instance_state"}
+    pt = raw.get("payment_type")
+    pm = raw.get("payment_method")
+    if hasattr(pt, "value"):
+        raw["payment_type"] = pt.value
+    if hasattr(pm, "value"):
+        raw["payment_method"] = pm.value
+    raw["tenant_name"] = tenant.full_name if tenant else None
+    raw["unit_number"] = unit.unit_number if unit else None
+    raw["property_name"] = prop.name if prop else None
+    return raw
 
 
 def _load(db: Session, payment_id: int, owner_id: int) -> Payment:
     p = (
         db.query(Payment)
-        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.property))
+        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.parent_property))
         .filter(Payment.id == payment_id, Payment.owner_id == owner_id, Payment.is_deleted == False)
         .first()
     )
@@ -38,9 +43,12 @@ def _load(db: Session, payment_id: int, owner_id: int) -> Payment:
 
 
 def get_tenant_payments(db: Session, tenant_id: int, owner_id: int) -> list:
+    t = db.query(Tenant).filter(Tenant.id == tenant_id, Tenant.owner_id == owner_id).first()
+    if not t:
+        raise HTTPException(404, "Tenant not found")
     rows = (
         db.query(Payment)
-        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.property))
+        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.parent_property))
         .filter(Payment.tenant_id == tenant_id, Payment.owner_id == owner_id, Payment.is_deleted == False)
         .order_by(Payment.payment_date.desc())
         .all()
@@ -51,7 +59,7 @@ def get_tenant_payments(db: Session, tenant_id: int, owner_id: int) -> list:
 def get_all_payments(db: Session, owner_id: int, limit: int = 100, offset: int = 0) -> list:
     rows = (
         db.query(Payment)
-        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.property))
+        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.parent_property))
         .filter(Payment.owner_id == owner_id, Payment.is_deleted == False)
         .order_by(Payment.payment_date.desc())
         .limit(limit).offset(offset)
@@ -83,7 +91,7 @@ def record_payment(db: Session, data: PaymentCreate, owner_id: int) -> dict:
             title="Payment received",
             message=f"{tenant.full_name} paid UGX {float(data.amount):,.0f} for {MONTHS[data.period_month-1]} {data.period_year}.",
             notif_type=NotifType.payment_received,
-            link=f"/tenants/{tenant.id}",
+            link=f"/landlord/tenants/{tenant.id}",
         )
         db.add(note)
         db.commit()
@@ -119,7 +127,7 @@ def generate_receipt_pdf(db: Session, payment_id: int, owner_id: int, upload_dir
     p = _load(db, payment_id, owner_id)
     tenant = p.tenant
     unit   = tenant.unit if tenant else None
-    prop   = unit.property if unit else None
+    prop   = unit.parent_property if unit else None
 
     # File path
     receipts_dir = os.path.join(upload_dir, "receipts")

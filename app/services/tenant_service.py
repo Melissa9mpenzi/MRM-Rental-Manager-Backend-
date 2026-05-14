@@ -1,3 +1,5 @@
+from typing import Optional
+
 from datetime import date
 from decimal import Decimal
 from sqlalchemy.orm import Session, joinedload
@@ -8,25 +10,58 @@ from app.models.property import Unit, Property, UnitStatus
 from app.schemas.tenant import TenantCreate, TenantUpdate
 from app.services.arrears_service import compute_tenant_balance
 
-class TenantService:
-    def _enrich(self, tenant: Tenant) -> dict:
-        """Add computed/relational fields to tenant dict."""
-        bal = compute_tenant_balance(tenant)
-        return {
-            **tenant.__dict__,
-            "unit_number":   tenant.unit.unit_number if tenant.unit else None,
-            "property_name": tenant.unit.property.name if tenant.unit and tenant.unit.property else None,
-            "property_id":   tenant.unit.property.id if tenant.unit and tenant.unit.property else None,
-            "balance_due":   bal["balance_due"],
-            "months_in_arrears": bal["months_in_arrears"],
-        }
 
+def _status_value(status) -> str:
+    if status is None:
+        return "active"
+    return status.value if hasattr(status, "value") else str(status)
+
+
+def _serialize_tenant(tenant: Tenant) -> dict:
+    bal = compute_tenant_balance(tenant)
+    unit = tenant.unit
+    prop = unit.parent_property if unit else None
+    dep = tenant.deposit_amount
+    return {
+        "id": tenant.id,
+        "owner_id": tenant.owner_id,
+        "user_id": tenant.user_id,
+        "unit_id": tenant.unit_id,
+        "full_name": tenant.full_name,
+        "phone": tenant.phone,
+        "email": tenant.email,
+        "national_id": tenant.national_id,
+        "emergency_contact_name": tenant.emergency_contact_name,
+        "emergency_contact_phone": tenant.emergency_contact_phone,
+        "lease_start": tenant.lease_start,
+        "lease_end": tenant.lease_end,
+        "monthly_rent": tenant.monthly_rent,
+        "deposit_amount": dep if dep is not None else Decimal("0"),
+        "deposit_paid": bool(tenant.deposit_paid) if tenant.deposit_paid is not None else False,
+        "deposit_receipt_path": tenant.deposit_receipt_path,
+        "status": _status_value(tenant.status),
+        "notes": tenant.notes,
+        "created_at": tenant.created_at,
+        "updated_at": tenant.updated_at,
+        "unit_number": unit.unit_number if unit else None,
+        "property_name": prop.name if prop else None,
+        "property_id": prop.id if prop else None,
+        "balance_due": bal["balance_due"],
+        "months_in_arrears": bal["months_in_arrears"],
+        "total_paid": bal["total_paid"],
+        "total_owed": bal["total_due"],
+        "balance": bal["balance_due"],
+        "months_behind": bal["months_in_arrears"],
+    }
+
+
+class TenantService:
     def _load(self, db: Session, tenant_id: int, owner_id: int) -> Tenant:
         t = (
             db.query(Tenant)
             .options(
                 joinedload(Tenant.payments),
-                joinedload(Tenant.unit).joinedload(Unit.property),
+                joinedload(Tenant.unit).joinedload(Unit.parent_property),
             )
             .filter(Tenant.id == tenant_id, Tenant.owner_id == owner_id)
             .first()
@@ -35,66 +70,117 @@ class TenantService:
             raise HTTPException(404, "Tenant not found")
         return t
 
+    def list_tenants(
+        self,
+        db: Session,
+        owner_id: int,
+        search: Optional[str] = None,
+        status: Optional[str] = None,
+        unit_id: Optional[int] = None,
+    ) -> list:
+        return self.get_all_tenants(
+            db,
+            owner_id,
+            search=search or "",
+            status_filter=status or "",
+            unit_id=unit_id,
+        )
+
     def get_all_tenants(
         self,
         db: Session,
         owner_id: int,
         search: str = "",
         status_filter: str = "",
-        property_id: int = None,
+        unit_id: Optional[int] = None,
     ) -> list:
         q = (
             db.query(Tenant)
             .options(
                 joinedload(Tenant.payments),
-                joinedload(Tenant.unit).joinedload(Unit.property),
+                joinedload(Tenant.unit).joinedload(Unit.parent_property),
             )
             .filter(Tenant.owner_id == owner_id)
         )
         if search:
             like = f"%{search}%"
             q = q.filter(
-                Tenant.full_name.ilike(like) | Tenant.phone.ilike(like)
+                (Tenant.full_name.ilike(like))
+                | (Tenant.phone.ilike(like))
+                | (Tenant.email.ilike(like))
             )
         if status_filter:
-            q = q.filter(Tenant.status == status_filter)
-        if property_id:
-            q = q.join(Unit).filter(Unit.property_id == property_id)
+            try:
+                st = TenantStatus(status_filter)
+                q = q.filter(Tenant.status == st)
+            except ValueError:
+                pass
+        if unit_id is not None:
+            q = q.filter(Tenant.unit_id == unit_id)
 
-        return [self._enrich(t) for t in q.order_by(Tenant.created_at.desc()).all()]
+        return [_serialize_tenant(t) for t in q.order_by(Tenant.created_at.desc()).all()]
 
     def get_tenant(self, db: Session, tenant_id: int, owner_id: int) -> dict:
-        return self._enrich(self._load(db, tenant_id, owner_id))
+        return _serialize_tenant(self._load(db, tenant_id, owner_id))
 
     def create_tenant(self, db: Session, data: TenantCreate, owner_id: int) -> dict:
-        # Verify unit belongs to owner and is vacant
-        unit = db.query(Unit).join(Property).filter(
-            Unit.id == data.unit_id,
-            Property.owner_id == owner_id,
-        ).first()
-        
+        if not data.unit_id:
+            raise HTTPException(400, "unit_id is required")
+
+        unit = (
+            db.query(Unit)
+            .join(Property)
+            .filter(
+                Unit.id == data.unit_id,
+                Property.owner_id == owner_id,
+            )
+            .first()
+        )
+
         if not unit:
             raise HTTPException(404, "Unit not found")
         if unit.status == UnitStatus.occupied:
             raise HTTPException(400, "Unit is already occupied")
 
-        tenant = Tenant(owner_id=owner_id, **data.model_dump())
-        db.add(tenant)
+        try:
+            st = TenantStatus(data.status) if isinstance(data.status, str) else TenantStatus.active
+        except ValueError:
+            st = TenantStatus.active
 
-        # Mark unit occupied
+        dep = data.deposit_amount if data.deposit_amount is not None else Decimal("0")
+
+        tenant = Tenant(
+            owner_id=owner_id,
+            unit_id=data.unit_id,
+            full_name=data.full_name,
+            phone=data.phone,
+            email=data.email,
+            national_id=data.national_id,
+            emergency_contact_name=data.emergency_contact_name,
+            emergency_contact_phone=data.emergency_contact_phone,
+            lease_start=data.lease_start,
+            lease_end=data.lease_end,
+            monthly_rent=data.monthly_rent,
+            deposit_amount=dep,
+            deposit_paid=bool(data.deposit_paid),
+            deposit_receipt_path=data.deposit_receipt_path,
+            status=st,
+            notes=data.notes,
+        )
+        db.add(tenant)
         unit.status = UnitStatus.occupied
         db.commit()
-        db.expire(tenant)
+        db.refresh(tenant)
 
-        # Create onboarding notification
         try:
             from app.models.notification import Notification, NotifType
+
             note = Notification(
                 user_id=owner_id,
                 title="New tenant added",
                 message=f"{data.full_name} has been onboarded to unit {unit.unit_number}.",
                 notif_type=NotifType.general,
-                link=f"/tenants/{tenant.id}",
+                link=f"/landlord/tenants/{tenant.id}",
             )
             db.add(note)
             db.commit()
@@ -105,9 +191,18 @@ class TenantService:
 
     def update_tenant(self, db: Session, tenant_id: int, data: TenantUpdate, owner_id: int) -> dict:
         t = self._load(db, tenant_id, owner_id)
-        for k, v in data.model_dump(exclude_none=True).items():
-            setattr(t, k, v)
+        payload = data.model_dump(exclude_none=True)
+        if "status" in payload and payload["status"] is not None:
+            try:
+                t.status = TenantStatus(payload["status"])
+            except ValueError:
+                pass
+            del payload["status"]
+        for k, v in payload.items():
+            if hasattr(t, k):
+                setattr(t, k, v)
         db.commit()
+        db.refresh(t)
         return self.get_tenant(db, tenant_id, owner_id)
 
     def move_out_tenant(self, db: Session, tenant_id: int, owner_id: int) -> dict:
@@ -116,7 +211,8 @@ class TenantService:
         if t.unit:
             t.unit.status = UnitStatus.vacant
         db.commit()
+        db.refresh(t)
         return self.get_tenant(db, tenant_id, owner_id)
 
-# CRITICAL: This line creates the instance that your router is looking for
+
 tenant_service = TenantService()

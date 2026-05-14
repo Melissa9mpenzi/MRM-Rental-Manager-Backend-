@@ -6,8 +6,13 @@ class Settings(BaseSettings):
     # Environment
     environment: str = "development"
 
-    # Database
-    database_url: str = "mysql+pymysql://root:@localhost/rental_manager_db"
+    # Database — Neon / Postgres (set DATABASE_URL in .env)
+    # Example: postgresql+psycopg2://USER:PASSWORD@ep-xxx.region.aws.neon.tech/neondb?sslmode=require
+    database_url: str = "postgresql+psycopg2://user:password@localhost:5432/rental_manager_db?sslmode=require"
+
+    # Postgres: schema for ORM tables (avoids clashing with Neon Auth public.users, etc.).
+    # Set to "public" only on a database where you control all public.* tables.
+    database_schema: str = "rental_mgr"
 
     # JWT
     secret_key: str = "change-me-in-production-use-long-random-string"
@@ -17,6 +22,12 @@ class Settings(BaseSettings):
 
     # CORS
     allowed_origins: List[str] = ["http://localhost:5173", "http://localhost:5174"]
+
+    # Auth email-link redirects + SPA (must match Vite dev server or production URL)
+    frontend_base_url: str = "http://localhost:5173"
+
+    # Used in outbound emails (must reach this FastAPI instance from the user's mail client)
+    api_public_base_url: str = "http://localhost:8000"
 
     # File uploads
     upload_dir: str = "./uploads"
