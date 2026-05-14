@@ -2,6 +2,8 @@ import smtplib
 import random
 import string
 import secrets
+from urllib.parse import quote
+
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.config import settings
@@ -38,23 +40,36 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
         return False
 
 
-def send_registration_verification_link(to_email: str, full_name: str, token: str, frontend_url: str = "http://localhost:5174") -> bool:
-    """Send email verification link instead of OTP."""
-    verification_link = f"{frontend_url}/verify-email?email={to_email}&token={token}"
+def send_registration_verification_link(
+    to_email: str,
+    full_name: str,
+    token: str,
+    *,
+    api_base_url: str,
+    otp: str,
+) -> bool:
+    """Send email with verify link and 6-digit OTP (same expiry as link)."""
+    base = api_base_url.rstrip("/")
+    q = f"email={quote(to_email)}&token={quote(token, safe='')}"
+    verification_link = f"{base}/api/v1/auth/verify-email?{q}"
     subject = "Verify your RentalMGR account"
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;background:#f4f7f7;border-radius:12px;">
       <h2 style="color:#161d23;margin-bottom:8px;">Welcome to RentalMGR, {full_name}!</h2>
-      <p style="color:#576e6a;margin-bottom:24px;">Please click the button below to verify your email address:</p>
+      <p style="color:#576e6a;margin-bottom:16px;">Use this code in the app or website to verify your email:</p>
+      <div style="background:#ffffff;border-radius:10px;padding:20px;text-align:center;border:2px solid #d4e8e5;margin-bottom:20px;">
+        <span style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#5e8d83;">{otp}</span>
+      </div>
+      <p style="color:#576e6a;margin-bottom:24px;">Or click the button below:</p>
       <div style="text-align:center;margin:24px 0;">
-        <a href="{verification_link}" 
+        <a href="{verification_link}"
            style="background:#5e8d83;color:#ffffff;padding:16px 32px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">
           Verify Email Address
         </a>
       </div>
       <p style="color:#576e6a;margin-top:24px;font-size:13px;">Or copy and paste this link into your browser:</p>
       <p style="background:#ffffff;padding:12px;border-radius:6px;word-break:break-all;font-size:12px;color:#161d23;">{verification_link}</p>
-      <p style="color:#576e6a;margin-top:24px;font-size:13px;">This link expires in <strong>15 minutes</strong>. If you didn't register, ignore this email.</p>
+      <p style="color:#576e6a;margin-top:24px;font-size:13px;">The code and link expire in <strong>15 minutes</strong>. If you didn't register, ignore this email.</p>
     </div>
     """
     return send_email(to_email, subject, html)

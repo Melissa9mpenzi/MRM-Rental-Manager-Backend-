@@ -30,6 +30,9 @@ class User(Base):
     # Email verification token
     verification_token = Column(String(100), nullable=True)
     verification_token_expiry = Column(DateTime, nullable=True)
+    # 6-digit OTP (same window as link) — emailed alongside the verify link
+    verification_otp = Column(String(10), nullable=True)
+    verification_otp_expiry = Column(DateTime, nullable=True)
 
     # Refresh token stored server-side for revocation
     refresh_token   = Column(String(500), nullable=True)

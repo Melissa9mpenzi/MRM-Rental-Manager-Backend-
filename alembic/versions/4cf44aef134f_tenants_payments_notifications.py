@@ -9,7 +9,6 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-from sqlalchemy.dialects import mysql
 
 # revision identifiers, used by Alembic.
 revision: str = '4cf44aef134f'
@@ -42,22 +41,108 @@ def upgrade() -> None:
     op.drop_column('tenants', 'emergency_phone')
     op.drop_column('tenants', 'email')
     op.drop_column('tenants', 'emergency_name')
-    op.alter_column('units', 'unit_type',
-               existing_type=mysql.VARCHAR(length=50),
-               type_=sa.Enum('bedsitter', 'one_bedroom', 'two_bedroom', 'three_bedroom', 'studio', 'shop', 'office', 'other', name='unittype'),
-               existing_nullable=True)
-    op.alter_column('units', 'rent_amount',
-               existing_type=mysql.VARCHAR(length=32),
-               type_=sa.Numeric(precision=12, scale=2),
-               existing_nullable=False)
-    op.alter_column('units', 'status',
-               existing_type=mysql.VARCHAR(length=32),
-               type_=sa.Enum('vacant', 'occupied', 'maintenance', name='unitstatus'),
-               existing_nullable=True)
-    op.alter_column('units', 'amenities',
-               existing_type=mysql.TEXT(),
-               type_=sa.JSON(),
-               existing_nullable=True)
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        sa.Enum(
+            "bedsitter",
+            "one_bedroom",
+            "two_bedroom",
+            "three_bedroom",
+            "studio",
+            "shop",
+            "office",
+            "other",
+            name="unittype",
+        ).create(bind, checkfirst=True)
+        sa.Enum(
+            "vacant",
+            "occupied",
+            "maintenance",
+            name="unitstatus",
+        ).create(bind, checkfirst=True)
+        op.execute(
+            sa.text(
+                "ALTER TABLE units ALTER COLUMN unit_type TYPE unittype "
+                "USING unit_type::unittype"
+            )
+        )
+        op.execute(
+            sa.text(
+                "ALTER TABLE units ALTER COLUMN rent_amount TYPE numeric(12,2) "
+                "USING NULLIF(trim(rent_amount::text), '')::numeric"
+            )
+        )
+        op.execute(
+            sa.text(
+                "ALTER TABLE units ALTER COLUMN status TYPE unitstatus "
+                "USING status::unitstatus"
+            )
+        )
+        op.execute(
+            sa.text(
+                "ALTER TABLE units ALTER COLUMN amenities TYPE json USING "
+                "CASE WHEN amenities IS NULL OR btrim(amenities::text) = '' "
+                "THEN NULL::json ELSE amenities::json END"
+            )
+        )
+    else:
+        from sqlalchemy.dialects import mysql
+
+        sa.Enum(
+            "bedsitter",
+            "one_bedroom",
+            "two_bedroom",
+            "three_bedroom",
+            "studio",
+            "shop",
+            "office",
+            "other",
+            name="unittype",
+        ).create(bind, checkfirst=True)
+        sa.Enum(
+            "vacant",
+            "occupied",
+            "maintenance",
+            name="unitstatus",
+        ).create(bind, checkfirst=True)
+        op.alter_column(
+            "units",
+            "unit_type",
+            existing_type=mysql.VARCHAR(length=50),
+            type_=sa.Enum(
+                "bedsitter",
+                "one_bedroom",
+                "two_bedroom",
+                "three_bedroom",
+                "studio",
+                "shop",
+                "office",
+                "other",
+                name="unittype",
+            ),
+            existing_nullable=True,
+        )
+        op.alter_column(
+            "units",
+            "rent_amount",
+            existing_type=mysql.VARCHAR(length=32),
+            type_=sa.Numeric(precision=12, scale=2),
+            existing_nullable=False,
+        )
+        op.alter_column(
+            "units",
+            "status",
+            existing_type=mysql.VARCHAR(length=32),
+            type_=sa.Enum("vacant", "occupied", "maintenance", name="unitstatus"),
+            existing_nullable=True,
+        )
+        op.alter_column(
+            "units",
+            "amenities",
+            existing_type=mysql.TEXT(),
+            type_=sa.JSON(),
+            existing_nullable=True,
+        )
     op.create_index(op.f('ix_units_id'), 'units', ['id'], unique=False)
     op.create_unique_constraint('uq_unit_in_property', 'units', ['property_id', 'unit_number'])
     # ### end Alembic commands ###
@@ -70,39 +155,39 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_units_id'), table_name='units')
     op.alter_column('units', 'amenities',
                existing_type=sa.JSON(),
-               type_=mysql.TEXT(),
+               type_=sa.Text(),
                existing_nullable=True)
     op.alter_column('units', 'status',
                existing_type=sa.Enum('vacant', 'occupied', 'maintenance', name='unitstatus'),
-               type_=mysql.VARCHAR(length=32),
+               type_=sa.String(length=32),
                existing_nullable=True)
     op.alter_column('units', 'rent_amount',
                existing_type=sa.Numeric(precision=12, scale=2),
-               type_=mysql.VARCHAR(length=32),
+               type_=sa.String(length=32),
                existing_nullable=False)
     op.alter_column('units', 'unit_type',
                existing_type=sa.Enum('bedsitter', 'one_bedroom', 'two_bedroom', 'three_bedroom', 'studio', 'shop', 'office', 'other', name='unittype'),
-               type_=mysql.VARCHAR(length=50),
+               type_=sa.String(length=50),
                existing_nullable=True)
-    op.add_column('tenants', sa.Column('emergency_name', mysql.VARCHAR(length=200), nullable=True))
-    op.add_column('tenants', sa.Column('email', mysql.VARCHAR(length=255), nullable=True))
-    op.add_column('tenants', sa.Column('emergency_phone', mysql.VARCHAR(length=20), nullable=True))
+    op.add_column('tenants', sa.Column('emergency_name', sa.String(length=200), nullable=True))
+    op.add_column('tenants', sa.Column('email', sa.String(length=255), nullable=True))
+    op.add_column('tenants', sa.Column('emergency_phone', sa.String(length=20), nullable=True))
     op.add_column('tenants', sa.Column('lease_end', sa.DATE(), nullable=True))
-    op.add_column('tenants', sa.Column('is_active', mysql.TINYINT(display_width=1), autoincrement=False, nullable=True))
-    op.add_column('tenants', sa.Column('deposit_paid', mysql.TINYINT(display_width=1), autoincrement=False, nullable=True))
+    op.add_column('tenants', sa.Column('is_active', sa.Boolean(), nullable=True))
+    op.add_column('tenants', sa.Column('deposit_paid', sa.Boolean(), nullable=True))
     op.add_column('tenants', sa.Column('deposit_paid_date', sa.DATE(), nullable=True))
-    op.add_column('tenants', sa.Column('created_at', mysql.DATETIME(), nullable=True))
+    op.add_column('tenants', sa.Column('created_at', sa.DateTime(), nullable=True))
     op.add_column('tenants', sa.Column('lease_start', sa.DATE(), nullable=False))
-    op.add_column('tenants', sa.Column('full_name', mysql.VARCHAR(length=200), nullable=False))
-    op.add_column('tenants', sa.Column('deposit_amount', mysql.VARCHAR(length=32), nullable=True))
-    op.add_column('tenants', sa.Column('rent_override', mysql.VARCHAR(length=32), nullable=True))
-    op.add_column('tenants', sa.Column('notes', mysql.TEXT(), nullable=True))
-    op.add_column('tenants', sa.Column('phone', mysql.VARCHAR(length=20), nullable=False))
-    op.add_column('tenants', sa.Column('national_id', mysql.VARCHAR(length=50), nullable=True))
-    op.add_column('tenants', sa.Column('updated_at', mysql.DATETIME(), nullable=True))
+    op.add_column('tenants', sa.Column('full_name', sa.String(length=200), nullable=False))
+    op.add_column('tenants', sa.Column('deposit_amount', sa.String(length=32), nullable=True))
+    op.add_column('tenants', sa.Column('rent_override', sa.String(length=32), nullable=True))
+    op.add_column('tenants', sa.Column('notes', sa.Text(), nullable=True))
+    op.add_column('tenants', sa.Column('phone', sa.String(length=20), nullable=False))
+    op.add_column('tenants', sa.Column('national_id', sa.String(length=50), nullable=True))
+    op.add_column('tenants', sa.Column('updated_at', sa.DateTime(), nullable=True))
     op.add_column('tenants', sa.Column('move_out_date', sa.DATE(), nullable=True))
     op.drop_index(op.f('ix_tenants_id'), table_name='tenants')
-    op.add_column('properties', sa.Column('total_units', mysql.INTEGER(display_width=11), autoincrement=False, nullable=True))
+    op.add_column('properties', sa.Column('total_units', sa.Integer(), nullable=True))
     op.drop_index(op.f('ix_properties_owner_id'), table_name='properties')
     op.drop_index(op.f('ix_properties_id'), table_name='properties')
     # ### end Alembic commands ###

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.auth import UserOut
 from app.config import settings
 
@@ -21,7 +21,11 @@ router = APIRouter(prefix="/users", tags=["Users"])
 
 class ProfileUpdate(BaseModel):
     full_name: Optional[str] = None
-    phone:     Optional[str] = None
+    phone: Optional[str] = None
+    role: Optional[str] = None
+
+
+_SELF_SERVICE_ROLES = frozenset({UserRole.tenant, UserRole.landlord, UserRole.staff})
 
 
 @router.get("/me", response_model=UserOut, summary="Get current user profile")
@@ -39,6 +43,15 @@ def update_me(
         current_user.full_name = data.full_name.strip()
     if data.phone:
         current_user.phone = data.phone.strip()
+    if data.role is not None:
+        raw = data.role.strip().lower()
+        try:
+            new_role = UserRole(raw)
+        except ValueError:
+            raise HTTPException(400, "Invalid role.")
+        if new_role not in _SELF_SERVICE_ROLES:
+            raise HTTPException(403, "This role cannot be self-assigned.")
+        current_user.role = new_role
     db.commit()
     db.refresh(current_user)
     return current_user

@@ -9,6 +9,7 @@ from app.models.property import Property, Unit, UnitStatus
 from app.models.tenant import Tenant, TenantStatus
 from app.models.payment import Payment, PaymentType
 from app.services.arrears_service import get_arrears_list
+from app.utils.response import success_response
 
 router = APIRouter(tags=["Dashboard"])
 
@@ -94,7 +95,8 @@ def get_dashboard_stats(
     # Top arrears (max 5)
     top_arrears = [a for a in arrears_list if a["balance_due"] > 0][:5]
 
-    return {
+    return success_response(
+        data={
         "total_properties":       total_properties,
         "total_units":            total_units,
         "total_tenants":          total_tenants,
@@ -109,4 +111,5 @@ def get_dashboard_stats(
         "monthly_income":         monthly_income,
         "recent_properties":      recent_properties,
         "top_arrears":            top_arrears,
-    }
+        }
+    )

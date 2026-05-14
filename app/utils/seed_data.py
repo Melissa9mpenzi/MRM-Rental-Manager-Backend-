@@ -1,7 +1,8 @@
 """
-Database Seeding Script
-Creates comprehensive test data for the rental management system.
-Run this to populate the database with realistic data for testing.
+Optional database seeding for local development and manual QA.
+
+Creates sample users, properties, and related rows. **Not** part of production deploy:
+run `python -m app.utils.init_db` for schema only, then create real accounts via your app.
 """
 from datetime import datetime, timedelta, date
 from decimal import Decimal
@@ -10,7 +11,8 @@ from app.database import SessionLocal
 from app.models.user import User, UserRole
 from app.models.property import Property, Unit, UnitStatus, UnitType
 from app.models.tenant import Tenant, TenantStatus
-from app.models.payment import Payment, PaymentMethod
+from app.models.lease import Lease, LeaseStatus
+from app.models.payment import Payment, PaymentMethod, PaymentType
 from app.models.maintenance import MaintenanceRequest
 from app.services.auth_service import auth_service
 
@@ -266,24 +268,33 @@ def create_tenants(db: Session, users, units):
         end_date = start_date + timedelta(days=365)  # 1 year lease
         
         tenant = Tenant(
-            unit_id=unit.id,
             owner_id=landlord.id,
-            user_id=None,  # No login account yet (can be invited later)
+            user_id=None,
             full_name=name,
             phone=phone,
             email=email,
-            national_id=f"CM{i+10000000}PE",  # Fake national ID
+            national_id=f"CM{i+10000000}PE",
             emergency_contact_name=f"Emergency Contact {i+1}",
             emergency_contact_phone=f"+256 71{i} 000 000",
-            lease_start=start_date,
-            lease_end=end_date,
-            monthly_rent=unit.rent_amount,
-            deposit_amount=unit.rent_amount,  # 1 month deposit
-            deposit_paid=i % 3 != 0,  # Most have paid deposit
-            status=TenantStatus.active
+            status=TenantStatus.active,
         )
         db.add(tenant)
         db.flush()
+
+        lease = Lease(
+            tenant_id=tenant.id,
+            unit_id=unit.id,
+            owner_id=landlord.id,
+            start_date=start_date,
+            end_date=end_date,
+            monthly_rent=unit.rent_amount,
+            deposit_amount=unit.rent_amount,
+            deposit_paid=i % 3 != 0,
+            status=LeaseStatus.active,
+        )
+        db.add(lease)
+        db.flush()
+
         tenants.append(tenant)
         
         # Update unit status to occupied
@@ -301,24 +312,34 @@ def create_payments(db: Session, tenants, units):
     today = date.today()
     
     for tenant in tenants:
-        # Create payments for the last 3 months
+        lease = (
+            db.query(Lease)
+            .filter(Lease.tenant_id == tenant.id, Lease.status == LeaseStatus.active)
+            .first()
+        )
+        if not lease:
+            continue
+
         for month_offset in range(3, 0, -1):
             payment_date = today - timedelta(days=month_offset * 30)
-            
-            # 90% have paid, 10% outstanding
+
             if month_offset == 1 and tenant.id % 10 == 0:
-                continue  # Skip this month (arrears)
-            
+                continue
+
             payment = Payment(
                 tenant_id=tenant.id,
-                unit_id=tenant.unit_id,
-                amount=tenant.monthly_rent,
-                payment_date=payment_date,
+                lease_id=lease.id,
+                unit_id=lease.unit_id,
+                owner_id=lease.owner_id,
+                amount=lease.monthly_rent,
+                payment_type=PaymentType.rent,
+                payment_method=PaymentMethod.mtn_momo
+                if payment_date.day % 2 == 0
+                else PaymentMethod.cash,
+                reference=f"TXN{tenant.id}{payment_date.strftime('%Y%m%d')}",
                 period_month=payment_date.month,
                 period_year=payment_date.year,
-                payment_method=PaymentMethod.momo_mtn if payment_date.day % 2 == 0 else PaymentMethod.cash,
-                reference_code=f"TXN{tenant.id}{payment_date.strftime('%Y%m%d')}",
-                recorded_by=tenant.owner_id
+                payment_date=payment_date,
             )
             db.add(payment)
             payments.append(payment)

@@ -42,7 +42,7 @@ class Lease(Base):
     updated_at = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())
     
     # Relationships
-    tenant = relationship("Tenant", back_populates="leases")
+    tenant = relationship("Tenant", foreign_keys=[tenant_id])
     unit = relationship("Unit", back_populates="leases")
     owner = relationship("User", backref="leases")
     payments = relationship("Payment", back_populates="lease", cascade="all, delete-orphan")
