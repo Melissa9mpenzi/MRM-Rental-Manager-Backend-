@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_trusted_for_listings
 from app.models.user import User
 from app.schemas.property import (
     PropertyCreate, PropertyUpdate, PropertyOut, PropertySummary,
@@ -31,7 +31,7 @@ def list_properties(
 def create_property(
     data: PropertyCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_trusted_for_listings),
 ):
     """Create new property with standardized response"""
     prop = property_service.create_property(db, data, current_user.id)

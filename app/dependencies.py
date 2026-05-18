@@ -118,6 +118,25 @@ def require_admin_or_staff(current_user: User = Depends(get_current_user)) -> Us
     return current_user
 
 
+def require_trusted_for_listings(current_user: User = Depends(get_current_user)) -> User:
+    """
+    Landlords and agents (staff) must be admin-approved (trusted_for_commerce) before
+    publishing listings or other high-risk landlord actions.
+    """
+    if str(current_user.role) in ("landlord", "staff"):
+        trusted = getattr(current_user, "trusted_for_commerce", True)
+        if not trusted:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "success": False,
+                    "message": "Your landlord or agent account is not yet approved to publish listings. "
+                    "Complete KYC and wait for admin review, or contact support.",
+                },
+            )
+    return current_user
+
+
 def require_roles(allowed_roles: list):
     """
     Factory for multi-role dependencies.

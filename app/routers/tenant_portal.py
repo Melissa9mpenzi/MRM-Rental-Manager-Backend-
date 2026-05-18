@@ -252,6 +252,8 @@ def accept_tenant_invite(
         password_hash=auth_service.hash_password(accept.password),
         role=UserRole.tenant,
         email_verified=True,
+        trusted_for_commerce=True,
+        kyc_review_status="none",
     )
     db.add(user)
     db.commit()

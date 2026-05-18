@@ -1,16 +1,22 @@
 """Admin / staff (agent) workspace APIs — read-only aggregates and admin user directory."""
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import get_current_user, require_admin, require_roles
-from app.models.user import User
+from app.models.user import User, UserRole
+from app.schemas.auth import UserOut
 from app.services.workspace_service import admin_list_users, admin_summary, staff_summary
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/workspace", tags=["Workspace"])
+
+
+class KycModerationBody(BaseModel):
+    action: str  # approve | reject
 
 
 @router.get("/admin/summary")
@@ -35,6 +41,32 @@ def list_admin_users(
         db, search=search, role=role, limit=limit, offset=offset
     )
     return success_response(data={"items": items, "total": total, "limit": limit, "offset": offset})
+
+
+@router.patch("/admin/users/{user_id}/kyc-review", summary="Approve or reject landlord/agent KYC")
+def admin_kyc_review(
+    user_id: int,
+    body: KycModerationBody,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if user.role not in (UserRole.landlord, UserRole.staff):
+        raise HTTPException(status_code=400, detail="KYC moderation applies to landlords and agents only.")
+    act = (body.action or "").strip().lower()
+    if act == "approve":
+        user.kyc_review_status = "approved"
+        user.trusted_for_commerce = True
+    elif act == "reject":
+        user.kyc_review_status = "rejected"
+        user.trusted_for_commerce = False
+    else:
+        raise HTTPException(status_code=400, detail="action must be approve or reject.")
+    db.commit()
+    db.refresh(user)
+    return success_response(data=UserOut.model_validate(user).model_dump())
 
 
 @router.get("/staff/summary")
