@@ -107,7 +107,9 @@ def create_users(db: Session):
             role=data["role"],
             password_hash=auth_service.hash_password(data["password"]),
             email_verified=True,
-            is_active=True
+            is_active=True,
+            trusted_for_commerce=True,
+            kyc_review_status="approved",
         )
         db.add(user)
         db.flush()

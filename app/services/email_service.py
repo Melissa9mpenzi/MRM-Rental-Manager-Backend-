@@ -2,11 +2,12 @@ import smtplib
 import random
 import string
 import secrets
-from urllib.parse import quote
 
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+
 from app.config import settings
+from app.services.email_templates import html_email_verification, html_password_reset
 
 
 def generate_otp(length: int = 6) -> str:
@@ -23,8 +24,8 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
     try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
-        msg["From"]    = settings.smtp_from
-        msg["To"]      = to_email
+        msg["From"] = settings.smtp_from
+        msg["To"] = to_email
         msg.attach(MIMEText(html_body, "html"))
 
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
@@ -48,43 +49,15 @@ def send_registration_verification_link(
     api_base_url: str,
     otp: str,
 ) -> bool:
-    """Send email with verify link and 6-digit OTP (same expiry as link)."""
-    base = api_base_url.rstrip("/")
-    q = f"email={quote(to_email)}&token={quote(token, safe='')}"
-    verification_link = f"{base}/api/v1/auth/verify-email?{q}"
-    subject = "Verify your RentalMGR account"
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;background:#f4f7f7;border-radius:12px;">
-      <h2 style="color:#161d23;margin-bottom:8px;">Welcome to RentalMGR, {full_name}!</h2>
-      <p style="color:#576e6a;margin-bottom:16px;">Use this code in the app or website to verify your email:</p>
-      <div style="background:#ffffff;border-radius:10px;padding:20px;text-align:center;border:2px solid #d4e8e5;margin-bottom:20px;">
-        <span style="font-size:36px;font-weight:bold;letter-spacing:8px;color:#5e8d83;">{otp}</span>
-      </div>
-      <p style="color:#576e6a;margin-bottom:24px;">Or click the button below:</p>
-      <div style="text-align:center;margin:24px 0;">
-        <a href="{verification_link}"
-           style="background:#5e8d83;color:#ffffff;padding:16px 32px;border-radius:8px;text-decoration:none;font-weight:bold;display:inline-block;">
-          Verify Email Address
-        </a>
-      </div>
-      <p style="color:#576e6a;margin-top:24px;font-size:13px;">Or copy and paste this link into your browser:</p>
-      <p style="background:#ffffff;padding:12px;border-radius:6px;word-break:break-all;font-size:12px;color:#161d23;">{verification_link}</p>
-      <p style="color:#576e6a;margin-top:24px;font-size:13px;">The code and link expire in <strong>15 minutes</strong>. If you didn't register, ignore this email.</p>
-    </div>
-    """
+    """Send branded verification email — OTP only (no magic link in email)."""
+    _ = api_base_url  # API callers pass this; email is OTP-only
+    _ = token  # stored on user row for optional link flows; not shown in email
+    subject = f"Confirm your email · {settings.email_brand_name}"
+    html = html_email_verification(full_name=full_name, otp=otp)
     return send_email(to_email, subject, html)
 
 
 def send_password_reset_otp(to_email: str, otp: str) -> bool:
-    subject = "Reset your RentalMGR password"
-    html = f"""
-    <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;background:#f4f7f7;border-radius:12px;">
-      <h2 style="color:#161d23;margin-bottom:8px;">Password Reset Request</h2>
-      <p style="color:#576e6a;margin-bottom:24px;">Use this code to reset your password:</p>
-      <div style="background:#ffffff;border-radius:10px;padding:24px;text-align:center;border:2px solid #d4e8e5;">
-        <span style="font-size:40px;font-weight:bold;letter-spacing:10px;color:#5e8d83;">{otp}</span>
-      </div>
-      <p style="color:#576e6a;margin-top:24px;font-size:13px;">This code expires in <strong>15 minutes</strong>. If you didn't request this, ignore this email.</p>
-    </div>
-    """
+    subject = f"Password reset · {settings.email_brand_name}"
+    html = html_password_reset(otp=otp)
     return send_email(to_email, subject, html)

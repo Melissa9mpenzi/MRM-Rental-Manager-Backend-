@@ -19,9 +19,15 @@ class User(Base):
     password_hash   = Column(String(255), nullable=False)
     full_name       = Column(String(150), nullable=False)
     phone           = Column(String(20), nullable=True)
-    role            = Column(Enum(UserRole), default=UserRole.landlord, nullable=False)
+    role            = Column(Enum(UserRole), default=UserRole.tenant, nullable=False)
     is_active       = Column(Boolean, default=True)
     email_verified  = Column(Boolean, default=False)
+    kyc_submitted_at = Column(DateTime, nullable=True)
+    # Trust / moderation (landlord & staff): listings & payments require admin approval after KYC.
+    kyc_review_status = Column(String(20), nullable=False, default="none")  # none | pending | approved | rejected
+    trusted_for_commerce = Column(Boolean, nullable=False, default=False)
+    # Linked Firebase Auth UID (optional; used with POST /auth/firebase).
+    firebase_uid = Column(String(128), nullable=True, unique=True, index=True)
 
     # Password reset — 6-digit OTP stored temporarily
     reset_otp       = Column(String(10), nullable=True)

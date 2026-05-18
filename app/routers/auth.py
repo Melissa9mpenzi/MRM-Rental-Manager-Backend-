@@ -15,6 +15,7 @@ from app.schemas.auth import (
     ForgotPasswordRequest,
     ResetPasswordRequest,
     VerifyEmailTokenBody,
+    FirebaseSignInBody,
 )
 from app.services.auth_service import auth_service
 from app.services.email_service import (
@@ -22,9 +23,10 @@ from app.services.email_service import (
     generate_verification_token
 )
 from app.dependencies import get_current_user
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.utils.security import decode_token
 from app.utils.response import success_response, error_response
+from app.services.firebase_token_service import verify_firebase_id_token
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -69,6 +71,17 @@ def _clear_email_verification_fields(user: User) -> None:
     user.verification_otp_expiry = None
 
 
+def _user_auth_payload(user: User) -> dict:
+    """JWT companion profile returned on login / me / firebase."""
+    return UserOut.model_validate(user).model_dump()
+
+
+def _apply_trust_after_email_verify(user: User) -> None:
+    """Tenants can use the product immediately after OTP/email verify; landlords/agents await KYC + admin."""
+    if user.role == UserRole.tenant:
+        user.trusted_for_commerce = True
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str
 
@@ -76,6 +89,11 @@ class RefreshRequest(BaseModel):
 # ── REGISTER (step 1) ─────────────────────────────────────────────
 @router.post("/register", status_code=201)
 def register(payload: UserRegister, db: Session = Depends(get_db)):
+    if payload.role == UserRole.admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Admin accounts are not self-serve. They are created internally by a super admin.",
+        )
     # Check duplicate
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(400, "An account with this email already exists.")
@@ -122,6 +140,7 @@ def verify_email_link(email: str, token: str, db: Session = Depends(get_db)):
 
     user.email_verified = True
     _clear_email_verification_fields(user)
+    _apply_trust_after_email_verify(user)
     db.commit()
 
     return RedirectResponse(url=_login_redirect(verified="true", email=email))
@@ -143,6 +162,7 @@ def verify_email_token(payload: VerifyEmailTokenBody, db: Session = Depends(get_
         raise error_response("Invalid verification code or link token.", status_code=400)
     user.email_verified = True
     _clear_email_verification_fields(user)
+    _apply_trust_after_email_verify(user)
     db.commit()
     return success_response(message="Email verified. You can sign in.")
 
@@ -159,19 +179,14 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         raise error_response("Please verify your email before logging in.", status_code=403)
 
     tokens = auth_service.create_tokens(db, user)
-    return success_response(
-        data={
-            "access_token": tokens["access_token"],
-            "refresh_token": tokens["refresh_token"],
-            "token_type": tokens.get("token_type", "bearer"),
-            "user": {
-                "id": user.id,
-                "full_name": user.full_name,
-                "email": user.email,
-                "role": user.role.value if hasattr(user.role, "value") else user.role,
-            },
-        }
-    )
+    payload_out = {
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "token_type": tokens.get("token_type", "bearer"),
+        "user": _user_auth_payload(user),
+        "needs_admin_2fa": user.role == UserRole.admin,
+    }
+    return success_response(data=payload_out)
 
 
 # ── REFRESH ───────────────────────────────────────────────────────
@@ -211,6 +226,11 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
     # Always return success to prevent email enumeration
     if not user:
+        if settings.environment == "development":
+            print(
+                f"\n[INFO] forgot-password: no account for {payload.email!r} — "
+                "no email sent. Register first or use the exact email on your account.\n"
+            )
         return {"message": "If that email exists, a reset code has been sent."}
 
     otp = generate_otp()
@@ -221,9 +241,19 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
 
     sent = send_password_reset_otp(user.email, otp)
     if not sent:
-        print(f"[WARN] Could not send reset OTP to {user.email}. OTP: {otp}")
+        print(
+            f"\n[WARN] Password reset email was NOT sent (check SMTP in .env).\n"
+            f"       Email: {user.email}\n"
+            f"       Reset code (valid 15 min): {otp}\n"
+        )
+        if settings.environment == "development":
+            return {
+                "message": "Reset code generated. Email was not sent — configure SMTP in .env or use the dev code below.",
+                "dev_reset_otp": otp,
+                "email_sent": False,
+            }
 
-    return {"message": "If that email exists, a reset code has been sent."}
+    return {"message": "If that email exists, a reset code has been sent.", "email_sent": True}
 
 
 # ── RESET PASSWORD ────────────────────────────────────────────────
@@ -251,14 +281,50 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     return {"message": "Password reset successfully. You can now log in."}
 
 
+@router.post("/firebase", summary="Exchange Firebase ID token for API JWT (optional)")
+def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
+    claims = verify_firebase_id_token(body.id_token)
+    if claims is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Firebase verification is not configured or the token is invalid.",
+        )
+    email = (claims.get("email") or "").strip().lower()
+    uid = claims.get("sub") or claims.get("user_id")
+    if not email:
+        raise error_response("Firebase token did not include an email address.", status_code=400)
+
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise error_response(
+            "No API account exists for this email. Register on the web first, then sign in with Firebase.",
+            status_code=404,
+        )
+    if not user.is_active:
+        raise error_response("Account is disabled. Contact support.", status_code=403)
+
+    if claims.get("email_verified") is True:
+        user.email_verified = True
+        _apply_trust_after_email_verify(user)
+
+    if uid and not user.firebase_uid:
+        user.firebase_uid = str(uid)[:128]
+    db.commit()
+    db.refresh(user)
+
+    tokens = auth_service.create_tokens(db, user)
+    return success_response(
+        data={
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": tokens.get("token_type", "bearer"),
+            "user": _user_auth_payload(user),
+            "needs_admin_2fa": user.role == UserRole.admin,
+        }
+    )
+
+
 # ── ME ────────────────────────────────────────────────────────────
 @router.get("/me")
 def me(current_user: User = Depends(get_current_user)):
-    return success_response(
-        data={
-            "id": current_user.id,
-            "full_name": current_user.full_name,
-            "email": current_user.email,
-            "role": current_user.role.value if hasattr(current_user.role, "value") else current_user.role,
-        }
-    )
+    return success_response(data=_user_auth_payload(current_user))

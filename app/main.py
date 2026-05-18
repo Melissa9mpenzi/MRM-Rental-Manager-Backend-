@@ -1,14 +1,25 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import os
 
 from app.config import settings
-from app.routers import auth, properties, dashboard, tenants, payments, notifications, maintenance, users, tenant_portal, leases, invoices, workspace
+from app.routers import auth, properties, dashboard, tenants, payments, notifications, maintenance, users, tenant_portal, leases, invoices, workspace, marketplace, saved_units, messages
 
 # Ensure upload subdirectories exist
-for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance"]:
+for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance", "kyc"]:
     os.makedirs(os.path.join(settings.upload_dir, sub), exist_ok=True)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    from app.utils.init_db import ensure_users_column_migrations
+
+    ensure_users_column_migrations()
+    yield
+
 
 app = FastAPI(
     title="RentalMGR API",
@@ -16,18 +27,17 @@ app = FastAPI(
     description="MRM Rental Manager — Property, Tenant & Payment Management API",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# CORS — explicit origins so browsers send Access-Control-Allow-Origin on credentialed-style API calls
-_cors_origins = list(
-    dict.fromkeys(
-        list(settings.allowed_origins)
-        + [
-            "http://127.0.0.1:5173",
-            "http://127.0.0.1:5174",
-        ]
-    )
-)
+# CORS — explicit origins (merge so a narrow .env ALLOWED_ORIGINS never drops common Vite ports)
+_local_vite = [
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+]
+_cors_origins = list(dict.fromkeys(_local_vite + list(settings.allowed_origins)))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -51,6 +61,9 @@ app.include_router(tenant_portal.router,  prefix=API)
 app.include_router(leases.router,       prefix=API)
 app.include_router(invoices.router,     prefix=API)
 app.include_router(workspace.router,   prefix=API)
+app.include_router(marketplace.router, prefix=API)
+app.include_router(saved_units.router, prefix=API)
+app.include_router(messages.router,    prefix=API)
 
 
 @app.get("/health", tags=["Health"])

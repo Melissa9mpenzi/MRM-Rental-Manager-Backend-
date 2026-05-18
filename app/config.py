@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from: str = ""
 
+    # Firebase Admin — path to service account JSON (optional). Used by POST /auth/firebase.
+    firebase_credentials_path: str = ""
+
+    # Transactional email branding (optional logo: public HTTPS URL, e.g. CDN or your SPA /logo.png)
+    email_brand_name: str = "RentDirect UG"
+    email_product_tagline: str = "Property rentals · Uganda"
+    email_brand_logo_url: str = ""
+    email_support_email: str = ""
+
     class Config:
         env_file = ".env"
         case_sensitive = False

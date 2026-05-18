@@ -237,6 +237,9 @@ def admin_list_users(
             "role": _role_value(u.role),
             "is_active": u.is_active,
             "email_verified": u.email_verified,
+            "kyc_submitted_at": u.kyc_submitted_at.isoformat() if u.kyc_submitted_at else None,
+            "kyc_review_status": getattr(u, "kyc_review_status", "none") or "none",
+            "trusted_for_commerce": bool(getattr(u, "trusted_for_commerce", True)),
             "created_at": u.created_at.isoformat() if u.created_at else None,
         }
         for u in rows

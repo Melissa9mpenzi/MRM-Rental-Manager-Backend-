@@ -16,7 +16,12 @@ class AuthService:
         return pwd_context.hash(password)
 
     def verify_password(self, plain: str, hashed: str) -> bool:
-        return pwd_context.verify(plain, hashed)
+        if not plain or not hashed:
+            return False
+        try:
+            return pwd_context.verify(plain, hashed)
+        except (ValueError, TypeError):
+            return False
 
     def set_password(self, db: Session, user: User, password: str):
         user.password_hash = self.hash_password(password)
@@ -35,8 +40,11 @@ class AuthService:
             email=payload.email,
             full_name=payload.full_name,
             phone=payload.phone,
+            role=payload.role,
             password_hash=self.hash_password(payload.password),
             email_verified=False,
+            trusted_for_commerce=False,
+            kyc_review_status="none",
             verification_token=verification_token,
             verification_token_expiry=token_expiry,
             verification_otp=verification_otp,
