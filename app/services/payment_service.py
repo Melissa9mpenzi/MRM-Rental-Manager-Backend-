@@ -1,12 +1,14 @@
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException
 
-from app.models.payment import Payment, PaymentType
+from app.models.payment import Payment, PaymentMethod, PaymentType
+from app.models.invoice import Invoice, InvoiceStatus
 from app.models.tenant import Tenant
 from app.models.property import Unit
+from app.models.user import User, UserRole
 from app.schemas.payment import PaymentCreate, PaymentUpdate
 
 
@@ -68,6 +70,76 @@ def get_all_payments(db: Session, owner_id: int, limit: int = 100, offset: int =
     return [_enrich(p) for p in rows]
 
 
+def settle_invoice_payment(
+    db: Session,
+    invoice: Invoice,
+    *,
+    amount: Decimal,
+    payment_method: str,
+    reference: str | None,
+    payment_date: date | None = None,
+    notes: str | None = None,
+) -> Payment:
+    """Create a rent payment and update invoice balances (used by gateway webhooks)."""
+    if invoice.status in (InvoiceStatus.paid, InvoiceStatus.cancelled):
+        raise HTTPException(409, f"Invoice is already {invoice.status.value}")
+
+    if amount > invoice.balance_due:
+        raise HTTPException(400, f"Payment amount exceeds balance due ({invoice.balance_due})")
+
+    try:
+        method_enum = PaymentMethod(payment_method)
+    except ValueError:
+        method_enum = PaymentMethod.other
+
+    payment = Payment(
+        tenant_id=invoice.tenant_id,
+        lease_id=invoice.lease_id,
+        unit_id=invoice.unit_id,
+        owner_id=invoice.owner_id,
+        amount=amount,
+        payment_type=PaymentType.rent,
+        payment_method=method_enum,
+        reference=reference,
+        period_month=invoice.period_month,
+        period_year=invoice.period_year,
+        payment_date=payment_date or date.today(),
+        notes=notes or "Gateway settlement",
+    )
+
+    invoice.amount_paid = Decimal(str(invoice.amount_paid)) + amount
+    invoice.balance_due = invoice.total_amount - invoice.amount_paid
+
+    if invoice.balance_due <= 0:
+        invoice.status = InvoiceStatus.paid
+        invoice.paid_at = datetime.now(timezone.utc)
+    else:
+        invoice.status = InvoiceStatus.partial
+
+    db.add(payment)
+    db.flush()
+
+    try:
+        from app.models.notification import Notification, NotifType
+
+        tenant = db.query(Tenant).filter(Tenant.id == invoice.tenant_id).first()
+        note = Notification(
+            user_id=invoice.owner_id,
+            title="Payment received",
+            message=(
+                f"{tenant.full_name if tenant else 'Tenant'} paid UGX {float(amount):,.0f} "
+                f"for {MONTHS[invoice.period_month - 1]} {invoice.period_year} (online)."
+            ),
+            notif_type=NotifType.payment_received,
+            link=f"/landlord/tenants/{invoice.tenant_id}",
+        )
+        db.add(note)
+    except Exception:
+        pass
+
+    return payment
+
+
 def record_payment(db: Session, data: PaymentCreate, owner_id: int) -> dict:
     # Verify tenant belongs to owner
     tenant = db.query(Tenant).filter(Tenant.id == data.tenant_id, Tenant.owner_id == owner_id).first()
@@ -113,6 +185,43 @@ def delete_payment(db: Session, payment_id: int, owner_id: int):
     p = _load(db, payment_id, owner_id)
     p.is_deleted = True
     db.commit()
+
+
+def wallet_summary_for_user(db: Session, user: User) -> dict:
+    """Aggregate rent payments visible to this user (tenant: own payments; owner: collected; admin: platform-wide)."""
+    q = db.query(Payment).filter(Payment.is_deleted == False)
+
+    if user.role == UserRole.tenant:
+        tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
+        if not tenant:
+            return {
+                "total_paid_ugx": 0.0,
+                "payment_count": 0,
+                "by_method": {},
+                "scope": "tenant",
+            }
+        q = q.filter(Payment.tenant_id == tenant.id)
+        scope = "tenant"
+    elif user.role == UserRole.admin:
+        scope = "admin"
+    else:
+        q = q.filter(Payment.owner_id == user.id)
+        scope = "owner"
+
+    rows = q.all()
+    total = sum(float(p.amount) for p in rows)
+    by_method: dict[str, float] = {}
+    for p in rows:
+        pm = p.payment_method
+        key = pm.value if hasattr(pm, "value") else str(pm)
+        by_method[key] = by_method.get(key, 0.0) + float(p.amount)
+
+    return {
+        "total_paid_ugx": round(total, 2),
+        "payment_count": len(rows),
+        "by_method": by_method,
+        "scope": scope,
+    }
 
 
 # ── PDF RECEIPT ────────────────────────────────────────────────────────────────

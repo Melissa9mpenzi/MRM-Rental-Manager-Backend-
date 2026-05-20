@@ -15,9 +15,30 @@ for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    from app.utils.init_db import ensure_users_column_migrations
+    import logging
+
+    from app.config import settings
+    from app.services.gateway.config import gateway_public_status, is_gateway_configured
+    from app.utils.init_db import ensure_users_column_migrations, ensure_payment_checkout_table
 
     ensure_users_column_migrations()
+    ensure_payment_checkout_table()
+
+    gw = gateway_public_status()
+    log = logging.getLogger("uvicorn.error")
+    if settings.environment == "production" and not is_gateway_configured():
+        log.error(
+            "PAYMENTS: gateway not configured — set MTN MoMo or Pesapal keys (see docs/PAYMENT_GATEWAY.md)."
+        )
+    elif gw.get("mock_enabled"):
+        log.warning("PAYMENTS: mock mode enabled (PAYMENT_ALLOW_MOCK) — not for real rent collection.")
+    elif gw.get("configured"):
+        log.info(
+            "PAYMENTS: %s (%s) — Uganda collections enabled.",
+            gw.get("provider"),
+            gw.get("mode"),
+        )
+
     yield
 
 

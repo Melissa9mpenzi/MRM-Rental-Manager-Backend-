@@ -1,15 +1,17 @@
 import os, uuid, shutil
-from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_tenant
 from app.models.user import User
 from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentUpdate, PaymentOut
-from app.services import payment_service
+from app.schemas.payment_gateway import InitiateCheckoutBody
+from app.services import payment_service, payment_gateway_service
+from app.services.gateway.config import gateway_public_status, is_mock_allowed
 from app.config import settings
 from app.utils.response import success_response, error_response
 
@@ -26,6 +28,90 @@ def list_payments(
     """List payments with standardized response"""
     payments = payment_service.get_all_payments(db, current_user.id, limit, offset)
     return success_response(data=payments)
+
+
+@router.get("/payments/gateway/status")
+def payment_gateway_status():
+    """Whether live Flutterwave (or dev-only mock) is active — clients use this before Pay now."""
+    return success_response(data=gateway_public_status())
+
+
+@router.post("/payments/checkout/initiate")
+def initiate_checkout(
+    body: InitiateCheckoutBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_tenant),
+):
+    """Tenant starts MoMo/card checkout; provider sends USSD prompt or hosted pay link."""
+    data = payment_gateway_service.initiate_checkout(db, current_user, body)
+    return success_response(data=data, message="Checkout started")
+
+
+@router.get("/payments/checkout/{reference}")
+def checkout_status(
+    reference: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    data = payment_gateway_service.get_checkout(db, current_user, reference)
+    return success_response(data=data)
+
+
+@router.post("/payments/checkout/{reference}/simulate")
+def simulate_checkout(
+    reference: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Disabled unless PAYMENT_ALLOW_MOCK=true (local dev only)."""
+    data = payment_gateway_service.simulate_checkout(db, reference, current_user)
+    return success_response(data=data, message="Payment simulated and recorded")
+
+
+@router.post("/payments/webhooks/mtn-momo")
+async def mtn_momo_webhook(request: Request, db: Session = Depends(get_db)):
+    body = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    result = payment_gateway_service.handle_provider_webhook(db, "mtn_momo", headers, body)
+    return success_response(data=result)
+
+
+@router.post("/payments/webhooks/pesapal")
+async def pesapal_webhook(request: Request, db: Session = Depends(get_db)):
+    body = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    result = payment_gateway_service.handle_provider_webhook(db, "pesapal", headers, body)
+    return success_response(data=result)
+
+
+@router.post("/payments/webhooks/flutterwave")
+async def flutterwave_webhook(request: Request, db: Session = Depends(get_db)):
+    body = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    result = payment_gateway_service.handle_provider_webhook(
+        db, "flutterwave", headers, body
+    )
+    return success_response(data=result)
+
+
+@router.post("/payments/webhooks/mock")
+async def mock_webhook(request: Request, db: Session = Depends(get_db)):
+    if not is_mock_allowed():
+        raise error_response("Mock webhooks are disabled.", status_code=404)
+    body = await request.body()
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    result = payment_gateway_service.handle_provider_webhook(db, "mock", headers, body)
+    return success_response(data=result)
+
+
+@router.get("/payments/wallet-summary")
+def wallet_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Totals and per-method breakdown for the in-app wallet (rent payments in DB)."""
+    data = payment_service.wallet_summary_for_user(db, current_user)
+    return success_response(data=data)
 
 
 @router.get("/tenants/{tenant_id}/payments")

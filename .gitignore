@@ -1,0 +1,24 @@
+# Secrets
+.env
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Virtual environment
+venv/
+.venv/
+
+# Uploads & local data
+uploads/
+
+# IDE
+.vscode/
+.idea/

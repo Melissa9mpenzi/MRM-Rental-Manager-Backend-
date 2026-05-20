@@ -26,6 +26,7 @@ from app.models import (  # noqa: F401
     Tenant,
     Lease,
     Payment,
+    PaymentCheckout,
     Invoice,
     MaintenanceRequest,
     Notification,
@@ -117,9 +118,20 @@ def ensure_users_column_migrations() -> None:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)
 
 
+def ensure_payment_checkout_table() -> None:
+    """Create ``payment_checkouts`` on existing DBs (create_all skips existing metadata)."""
+    from app.models.payment_checkout import PaymentCheckout
+
+    try:
+        PaymentCheckout.__table__.create(bind=engine, checkfirst=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_payment_checkout_table: %s", exc)
+
+
 if __name__ == "__main__":
     print("Creating tables from SQLAlchemy metadata…")
     init_tables()
     print("Applying users column migrations…")
     ensure_users_column_migrations()
+    ensure_payment_checkout_table()
     print("Done.")

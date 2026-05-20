@@ -43,6 +43,30 @@ class Settings(BaseSettings):
     # Firebase Admin — path to service account JSON (optional). Used by POST /auth/firebase.
     firebase_credentials_path: str = ""
 
+    # Payment gateway (Uganda): mtn_momo | pesapal | flutterwave | mock
+    payment_gateway_provider: str = "mtn_momo"
+    payment_allow_mock: bool = False
+    payment_webhook_secret: str = ""
+
+    # MTN MoMo Collection API — https://momodeveloper.mtn.com (UG MTN)
+    mtn_momo_subscription_key: str = ""
+    mtn_momo_api_user: str = ""
+    mtn_momo_api_key: str = ""
+    mtn_momo_target_environment: str = "sandbox"
+    mtn_momo_base_url: str = ""
+    mtn_momo_callback_url: str = ""
+    mtn_momo_webhook_secret: str = ""
+
+    # Pesapal — https://www.pesapal.com/ug/ (MTN + Airtel + card on one page)
+    pesapal_consumer_key: str = ""
+    pesapal_consumer_secret: str = ""
+    pesapal_env: str = "sandbox"
+    pesapal_ipn_id: str = ""
+
+    # Flutterwave (optional — not all Uganda merchants can onboard)
+    flutterwave_secret_key: str = ""
+    flutterwave_public_key: str = ""
+
     # Transactional email branding (optional logo: public HTTPS URL, e.g. CDN or your SPA /logo.png)
     email_brand_name: str = "RentDirect UG"
     email_product_tagline: str = "Property rentals · Uganda"
