@@ -37,6 +37,8 @@ class Property(Base):
     description = Column(Text, nullable=True)
     photo_path  = Column(String(500), nullable=True)
     is_active   = Column(Boolean, default=True)
+    # KCCA / government property verification: none | pending | verified | rejected | inspection | illegal
+    gov_verification_status = Column(String(24), nullable=False, default="pending")
     created_at  = Column(DateTime, default=func.now(), server_default=func.now())
     updated_at  = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())
 

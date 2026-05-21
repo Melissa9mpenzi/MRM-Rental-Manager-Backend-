@@ -202,8 +202,8 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
             }
         q = q.filter(Payment.tenant_id == tenant.id)
         scope = "tenant"
-    elif user.role == UserRole.admin:
-        scope = "admin"
+    elif user.role == UserRole.system_admin:
+        scope = "platform"
     else:
         q = q.filter(Payment.owner_id == user.id)
         scope = "owner"

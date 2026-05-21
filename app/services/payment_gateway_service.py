@@ -12,7 +12,7 @@ from app.config import settings
 from app.models.invoice import Invoice, InvoiceStatus
 from app.models.payment_checkout import CheckoutStatus, PaymentCheckout
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.payment_gateway import CheckoutNextAction, CheckoutOut, InitiateCheckoutBody
 from app.services import payment_service
 from app.services.gateway import get_gateway_provider
@@ -229,7 +229,7 @@ def get_checkout(db: Session, user: User, reference: str) -> dict:
         tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
         if not tenant or checkout.tenant_id != tenant.id:
             raise error_response("Access denied.", status_code=403)
-    elif user.role.value != "admin" and checkout.owner_id != user.id:
+    elif user.role.value != UserRole.system_admin.value and checkout.owner_id != user.id:
         raise error_response("Access denied.", status_code=403)
 
     next_action = CheckoutNextAction(

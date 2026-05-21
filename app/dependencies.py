@@ -3,7 +3,13 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.user import User
+from app.models.user import (
+    User,
+    UserRole,
+    can_access_government_portal,
+    is_government_officer,
+    is_system_admin,
+)
 from app.utils.security import decode_token
 
 # Use HTTPBearer — extracts "Authorization: Bearer <token>" header
@@ -53,17 +59,18 @@ def get_current_user(
     return user
 
 
-def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    """
-    Dependency for admin-only routes.
-    Usage: current_user: User = Depends(require_admin)
-    """
-    if current_user.role != "admin":
+def require_system_admin(current_user: User = Depends(get_current_user)) -> User:
+    """System administrator — seed-only operator for the entire platform."""
+    if not is_system_admin(current_user.role):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required."
+            detail="System administrator access required.",
         )
     return current_user
+
+
+require_global_admin = require_system_admin
+require_admin = require_system_admin
 
 
 def require_landlord(current_user: User = Depends(get_current_user)) -> User:
@@ -110,10 +117,14 @@ def require_admin_or_staff(current_user: User = Depends(get_current_user)) -> Us
     Dependency for admin or staff routes (property management).
     Usage: current_user: User = Depends(require_admin_or_staff)
     """
-    if current_user.role not in ("admin", "staff", "landlord"):
+    if current_user.role not in (
+        UserRole.system_admin.value,
+        UserRole.staff.value,
+        UserRole.landlord.value,
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin or Staff access required."
+            detail="Staff or landlord access required."
         )
     return current_user
 
@@ -137,10 +148,49 @@ def require_trusted_for_listings(current_user: User = Depends(get_current_user))
     return current_user
 
 
+def _role_str(user: User) -> str:
+    return user.role.value if hasattr(user.role, "value") else str(user.role)
+
+
+def require_government(current_user: User = Depends(get_current_user)) -> User:
+    """Government officers or system administrator (portal oversight)."""
+    if not can_access_government_portal(current_user.role):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Government portal access required.",
+        )
+    return current_user
+
+
+def require_government_agency(agency: str):
+    """
+    agency: nira | kcca | ura | all
+    System administrator may access all agencies.
+    """
+    agency = agency.lower()
+
+    def checker(current_user: User = Depends(get_current_user)) -> User:
+        role = _role_str(current_user)
+        if role == UserRole.system_admin.value:
+            return current_user
+        if agency == "nira" and role == UserRole.gov_nira.value:
+            return current_user
+        if agency == "kcca" and role == UserRole.gov_kcca.value:
+            return current_user
+        if agency == "ura" and role == UserRole.gov_ura.value:
+            return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied for {agency.upper()} module.",
+        )
+
+    return checker
+
+
 def require_roles(allowed_roles: list):
     """
     Factory for multi-role dependencies.
-    Usage: current_user: User = Depends(require_roles(["admin", "landlord"]))
+    Usage: current_user: User = Depends(require_roles(["system_admin", "landlord"]))
     """
     def checker(current_user: User = Depends(get_current_user)) -> User:
         if current_user.role not in allowed_roles:

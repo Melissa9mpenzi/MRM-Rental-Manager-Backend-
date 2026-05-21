@@ -6,8 +6,9 @@ run `python -m app.utils.init_db` for schema only, then create real accounts via
 """
 from datetime import datetime, timedelta, date
 from decimal import Decimal
+from sqlalchemy import text
 from sqlalchemy.orm import Session
-from app.database import SessionLocal
+from app.database import SessionLocal, postgres_table_schema
 from app.models.user import User, UserRole
 from app.models.property import Property, Unit, UnitStatus, UnitType
 from app.models.tenant import Tenant, TenantStatus
@@ -16,17 +17,79 @@ from app.models.payment import Payment, PaymentMethod, PaymentType
 from app.models.maintenance import MaintenanceRequest
 from app.services.auth_service import auth_service
 
+SYSTEM_ADMIN_EMAIL = "nakunguesther044@gmail.com"
+SYSTEM_ADMIN_PASSWORD = "admin12"
+SYSTEM_ADMIN_NAME = "Nakungu Esther"
+SYSTEM_ADMIN_PHONE = "+256 700 111 111"
+
+
+def _payments_table() -> str:
+    return f'"{postgres_table_schema}".payments' if postgres_table_schema else "payments"
+
+
+def payment_reference_exists(db: Session, reference: str) -> bool:
+    """Check seed payment ref without loading legacy payment rows via ORM."""
+    row = db.execute(
+        text(
+            f"""
+            SELECT 1 FROM {_payments_table()}
+            WHERE COALESCE(reference, reference_code) = :ref
+            LIMIT 1
+            """
+        ),
+        {"ref": reference},
+    ).first()
+    return row is not None
+
+
+def seed_system_admin_only() -> User:
+    """Seed a single system administrator (production-style bootstrap)."""
+    db = SessionLocal()
+    try:
+        print("Seeding system administrator only…")
+        existing = db.query(User).filter(User.email == SYSTEM_ADMIN_EMAIL).first()
+        if existing:
+            print(f"   System admin already exists: {SYSTEM_ADMIN_EMAIL}")
+            return existing
+
+        user = User(
+            email=SYSTEM_ADMIN_EMAIL,
+            full_name=SYSTEM_ADMIN_NAME,
+            phone=SYSTEM_ADMIN_PHONE,
+            role=UserRole.system_admin,
+            password_hash=auth_service.hash_password(SYSTEM_ADMIN_PASSWORD),
+            email_verified=True,
+            is_active=True,
+            trusted_for_commerce=True,
+            kyc_review_status="approved",
+            gov_onboarding_complete=True,
+            gov_agency="platform",
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        print(f"   Created system admin: {user.email}")
+        return user
+    except Exception as e:
+        db.rollback()
+        print(f"Error seeding system admin: {e}")
+        raise
+    finally:
+        db.close()
+
 
 def seed_database():
     """Seed database with comprehensive test data."""
     db = SessionLocal()
     
     try:
-        print("🌱 Starting database seeding...")
+        print("Starting database seeding (full demo data)…")
         
-        # Create users (landlords and admin)
+        # Create users (landlords and admin) — commit early so login works if later steps fail
         users = create_users(db)
-        
+        db.commit()
+        print("   Users committed (admin login available).")
+
         # Create properties
         properties = create_properties(db, users)
         
@@ -35,15 +98,17 @@ def seed_database():
         
         # Create tenants
         tenants = create_tenants(db, users, units)
-        
-        # Create payments
+        db.commit()
+        print("   Tenants and leases committed.")
+
+        # Create payments (optional sample data)
         create_payments(db, tenants, units)
         
         # Create maintenance requests
         create_maintenance_requests(db, units, users)
         
         db.commit()
-        print("✅ Database seeding completed successfully!")
+        print("Database seeding completed successfully!")
         print(f"   - {len(users)} users created")
         print(f"   - {len(properties)} properties created")
         print(f"   - {len(units)} units created")
@@ -51,7 +116,7 @@ def seed_database():
         
     except Exception as e:
         db.rollback()
-        print(f"❌ Error seeding database: {e}")
+        print(f"Error seeding database: {e}")
         raise
     finally:
         db.close()
@@ -63,11 +128,32 @@ def create_users(db: Session):
     
     user_data = [
         {
-            "email": "admin@rentalmgr.com",
-            "full_name": "System Administrator",
-            "phone": "+256 700 111 111",
-            "role": UserRole.admin,
-            "password": "admin12"
+            "email": SYSTEM_ADMIN_EMAIL,
+            "full_name": SYSTEM_ADMIN_NAME,
+            "phone": SYSTEM_ADMIN_PHONE,
+            "role": UserRole.system_admin,
+            "password": SYSTEM_ADMIN_PASSWORD,
+        },
+        {
+            "email": "nira.officer@rentdirect.ug",
+            "full_name": "NIRA Verification Officer",
+            "phone": "+256 700 100 001",
+            "role": UserRole.gov_nira,
+            "password": "nira12"
+        },
+        {
+            "email": "kcca.officer@rentdirect.ug",
+            "full_name": "KCCA Property Officer",
+            "phone": "+256 700 100 002",
+            "role": UserRole.gov_kcca,
+            "password": "kcca12"
+        },
+        {
+            "email": "ura.officer@rentdirect.ug",
+            "full_name": "URA Tax Compliance Officer",
+            "phone": "+256 700 100 003",
+            "role": UserRole.gov_ura,
+            "password": "ura12"
         },
         {
             "email": "landlord1@gmail.com",
@@ -100,17 +186,31 @@ def create_users(db: Session):
             users.append(existing)
             continue
         
+        role = data["role"]
         user = User(
             email=data["email"],
             full_name=data["full_name"],
             phone=data["phone"],
-            role=data["role"],
+            role=role,
             password_hash=auth_service.hash_password(data["password"]),
             email_verified=True,
             is_active=True,
-            trusted_for_commerce=True,
+            trusted_for_commerce=role != UserRole.gov_nira
+            and role != UserRole.gov_kcca
+            and role != UserRole.gov_ura,
             kyc_review_status="approved",
+            gov_onboarding_complete=role == UserRole.system_admin
+            or str(role.value).startswith("gov_"),
+            gov_2fa_enabled=str(role.value).startswith("gov_"),
         )
+        if role == UserRole.system_admin:
+            user.gov_agency = "platform"
+        elif role == UserRole.gov_nira:
+            user.gov_agency = "nira"
+        elif role == UserRole.gov_kcca:
+            user.gov_agency = "kcca"
+        elif role == UserRole.gov_ura:
+            user.gov_agency = "ura"
         db.add(user)
         db.flush()
         users.append(user)
@@ -202,18 +302,29 @@ def create_units(db: Session, properties):
     
     for config in unit_configs:
         prop = properties[config["prop_idx"]]
-        
+        created = 0
+        skipped = 0
+
         for i in range(config["count"]):
             unit_type = config["types"][i % len(config["types"])]
             floor = (i // 4) + 1  # 4 units per floor
-            
-            # Calculate rent based on unit type
+
             base_rent = config["rent_range"][0]
             max_rent = config["rent_range"][1]
             rent = base_rent + ((max_rent - base_rent) // config["count"]) * i
-            
+
             unit_number = f"{floor}0{(i % 4) + 1}"
-            
+
+            existing = (
+                db.query(Unit)
+                .filter(Unit.property_id == prop.id, Unit.unit_number == unit_number)
+                .first()
+            )
+            if existing:
+                units.append(existing)
+                skipped += 1
+                continue
+
             unit = Unit(
                 property_id=prop.id,
                 unit_number=unit_number,
@@ -222,13 +333,17 @@ def create_units(db: Session, properties):
                 rent_amount=Decimal(rent),
                 status=UnitStatus.vacant,
                 amenities={"water": True, "electricity": True, "wifi": unit_type != UnitType.bedsitter},
-                description=f"Clean {unit_type.value.replace('_', ' ')} unit with good lighting"
+                description=f"Clean {unit_type.value.replace('_', ' ')} unit with good lighting",
             )
             db.add(unit)
             db.flush()
             units.append(unit)
-        
-        print(f"   Created {config['count']} units for {prop.name}")
+            created += 1
+
+        print(
+            f"   Units for {prop.name}: {created} created"
+            + (f", {skipped} already existed" if skipped else "")
+        )
     
     return units
 
@@ -264,20 +379,31 @@ def create_tenants(db: Session, users, units):
         
         unit = vacant_units[i]
         landlord = landlords[i % len(landlords)]
-        
-        # Determine lease dates
+
+        existing_tenant = db.query(Tenant).filter(Tenant.email == email).first()
+        if existing_tenant:
+            print(f"   Tenant {email} already exists, skipping...")
+            tenants.append(existing_tenant)
+            continue
+
         start_date = lease_start_date + timedelta(days=i * 10)
         end_date = start_date + timedelta(days=365)  # 1 year lease
-        
+
         tenant = Tenant(
             owner_id=landlord.id,
             user_id=None,
+            unit_id=unit.id,
             full_name=name,
             phone=phone,
             email=email,
             national_id=f"CM{i+10000000}PE",
             emergency_contact_name=f"Emergency Contact {i+1}",
             emergency_contact_phone=f"+256 71{i} 000 000",
+            lease_start=start_date,
+            lease_end=end_date,
+            monthly_rent=unit.rent_amount,
+            deposit_amount=unit.rent_amount,
+            deposit_paid=i % 3 != 0,
             status=TenantStatus.active,
         )
         db.add(tenant)
@@ -328,6 +454,10 @@ def create_payments(db: Session, tenants, units):
             if month_offset == 1 and tenant.id % 10 == 0:
                 continue
 
+            reference = f"TXN{tenant.id}{payment_date.strftime('%Y%m%d')}"
+            if payment_reference_exists(db, reference):
+                continue
+
             payment = Payment(
                 tenant_id=tenant.id,
                 lease_id=lease.id,
@@ -338,7 +468,7 @@ def create_payments(db: Session, tenants, units):
                 payment_method=PaymentMethod.mtn_momo
                 if payment_date.day % 2 == 0
                 else PaymentMethod.cash,
-                reference=f"TXN{tenant.id}{payment_date.strftime('%Y%m%d')}",
+                reference=reference,
                 period_month=payment_date.month,
                 period_year=payment_date.year,
                 payment_date=payment_date,
@@ -368,7 +498,14 @@ def create_maintenance_requests(db: Session, units, users):
     
     for i, unit in enumerate(occupied_units[:5]):  # Only for first 5 occupied units
         title, desc, priority = issues[i]
-        
+
+        if (
+            db.query(MaintenanceRequest)
+            .filter(MaintenanceRequest.unit_id == unit.id, MaintenanceRequest.title == title)
+            .first()
+        ):
+            continue
+
         maint = MaintenanceRequest(
             unit_id=unit.id,
             title=title,
@@ -385,4 +522,9 @@ def create_maintenance_requests(db: Session, units, users):
 
 
 if __name__ == "__main__":
-    seed_database()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("--admin-only", "admin"):
+        seed_system_admin_only()
+    else:
+        seed_database()

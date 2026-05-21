@@ -6,7 +6,25 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from app.config import settings
-from app.routers import auth, properties, dashboard, tenants, payments, notifications, maintenance, users, tenant_portal, leases, invoices, workspace, marketplace, saved_units, messages
+from app.routers import (
+    auth,
+    properties,
+    dashboard,
+    tenants,
+    payments,
+    notifications,
+    maintenance,
+    users,
+    tenant_portal,
+    leases,
+    invoices,
+    workspace,
+    marketplace,
+    saved_units,
+    messages,
+    government,
+    government_auth,
+)
 
 # Ensure upload subdirectories exist
 for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance", "kyc"]:
@@ -19,10 +37,21 @@ async def lifespan(_app: FastAPI):
 
     from app.config import settings
     from app.services.gateway.config import gateway_public_status, is_gateway_configured
-    from app.utils.init_db import ensure_users_column_migrations, ensure_payment_checkout_table
+    from app.utils.init_db import (
+        ensure_government_schema_migrations,
+    ensure_government_invitation_tables,
+        ensure_payment_checkout_table,
+        ensure_payments_column_migrations,
+        ensure_tenants_column_migrations,
+        ensure_users_column_migrations,
+    )
 
     ensure_users_column_migrations()
+    ensure_tenants_column_migrations()
+    ensure_payments_column_migrations()
     ensure_payment_checkout_table()
+    ensure_government_schema_migrations()
+    ensure_government_invitation_tables()
 
     gw = gateway_public_status()
     log = logging.getLogger("uvicorn.error")
@@ -85,6 +114,8 @@ app.include_router(workspace.router,   prefix=API)
 app.include_router(marketplace.router, prefix=API)
 app.include_router(saved_units.router, prefix=API)
 app.include_router(messages.router,    prefix=API)
+app.include_router(government.router,  prefix=API)
+app.include_router(government_auth.router, prefix=API)
 
 
 @app.get("/health", tags=["Health"])

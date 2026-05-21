@@ -7,7 +7,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from app.config import settings
-from app.services.email_templates import html_email_verification, html_password_reset
+from app.services.email_templates import (
+    html_email_verification,
+    html_government_invitation,
+    html_password_reset,
+)
 
 
 def generate_otp(length: int = 6) -> str:
@@ -28,7 +32,9 @@ def send_email(to_email: str, subject: str, html_body: str) -> bool:
         msg["To"] = to_email
         msg.attach(MIMEText(html_body, "html"))
 
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+        # Do not block API responses for 30s+ when SMTP is wrong or unreachable.
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=8) as server:
+            server.sock.settimeout(8)
             server.ehlo()
             if settings.smtp_tls:
                 server.starttls()
@@ -54,6 +60,26 @@ def send_registration_verification_link(
     _ = token  # stored on user row for optional link flows; not shown in email
     subject = f"Confirm your email · {settings.email_brand_name}"
     html = html_email_verification(full_name=full_name, otp=otp)
+    return send_email(to_email, subject, html)
+
+
+def send_government_invitation_email(
+    to_email: str,
+    *,
+    full_name: str,
+    agency: str,
+    role_label: str,
+    invite_url: str,
+    work_id: str,
+) -> bool:
+    subject = "You have been invited to RentDirect Government Portal"
+    html = html_government_invitation(
+        full_name=full_name,
+        agency=agency,
+        role_label=role_label,
+        invite_url=invite_url,
+        work_id=work_id,
+    )
     return send_email(to_email, subject, html)
 
 

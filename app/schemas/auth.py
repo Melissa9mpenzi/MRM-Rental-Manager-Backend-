@@ -32,8 +32,10 @@ class UserRegister(BaseModel):
             return UserRole.tenant
         if s == "agent":
             return UserRole.staff
-        if s == "admin":
-            raise ValueError("Admin accounts are not self-serve. They are created internally by a super admin.")
+        if s == "system_admin":
+            raise ValueError("System administrator accounts are created by platform operators only.")
+        if s.startswith("gov_"):
+            raise ValueError("Government officer accounts are provisioned by invitation only.")
         try:
             return UserRole(s)
         except ValueError as exc:

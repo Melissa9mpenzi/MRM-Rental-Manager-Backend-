@@ -1,6 +1,6 @@
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
@@ -23,7 +23,7 @@ from app.services.email_service import (
     generate_verification_token
 )
 from app.dependencies import get_current_user
-from app.models.user import User, UserRole
+from app.models.user import User, UserRole, is_government_officer, is_system_admin
 from app.utils.security import decode_token
 from app.utils.response import success_response, error_response
 from app.services.firebase_token_service import verify_firebase_id_token
@@ -87,12 +87,38 @@ class RefreshRequest(BaseModel):
 
 
 # ── REGISTER (step 1) ─────────────────────────────────────────────
+def _send_registration_email(
+    email: str,
+    full_name: str,
+    token: str,
+    otp: str,
+) -> None:
+    sent = send_registration_verification_link(
+        email,
+        full_name,
+        token,
+        api_base_url=settings.api_public_base_url,
+        otp=otp,
+    )
+    if not sent:
+        print(f"[WARN] Could not send verification email to {email}. Token: {token}  OTP: {otp}")
+
+
 @router.post("/register", status_code=201)
-def register(payload: UserRegister, db: Session = Depends(get_db)):
-    if payload.role == UserRole.admin:
+def register(
+    payload: UserRegister,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    if payload.role in (
+        UserRole.system_admin,
+        UserRole.gov_nira,
+        UserRole.gov_kcca,
+        UserRole.gov_ura,
+    ) or str(payload.role).startswith("gov_"):
         raise HTTPException(
             status_code=403,
-            detail="Admin accounts are not self-serve. They are created internally by a super admin.",
+            detail="System administrator and government accounts cannot self-register.",
         )
     # Check duplicate
     if db.query(User).filter(User.email == payload.email).first():
@@ -106,16 +132,22 @@ def register(payload: UserRegister, db: Session = Depends(get_db)):
         db, payload, verification_token=token, token_expiry=expiry, verification_otp=otp
     )
 
-    sent = send_registration_verification_link(
-        user.email, user.full_name, token, api_base_url=settings.api_public_base_url, otp=otp
+    background_tasks.add_task(
+        _send_registration_email,
+        user.email,
+        user.full_name,
+        token,
+        otp,
     )
-    if not sent:
-        print(f"[WARN] Could not send verification email to {user.email}. Token: {token}  OTP: {otp}")
 
-    return {
+    body = {
         "message": "Account created. Check your email for a 6-digit code and verification link.",
         "email": user.email,
+        "email_sent": None,
     }
+    if settings.environment == "development":
+        body["dev_verification_otp"] = otp
+    return body
 
 
 # ── VERIFY EMAIL via Link (GET request for email links) ────────────
@@ -173,6 +205,12 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     user = auth_service.authenticate(db, payload.email, payload.password)
     if not user:
         raise error_response("Invalid email or password.", status_code=401)
+    if is_government_officer(user.role):
+        portal = settings.government_portal_path
+        raise error_response(
+            f"Government officers must sign in at the secure government portal ({portal}), not public login.",
+            status_code=403,
+        )
     if not user.is_active:
         raise error_response("Account is disabled. Contact support.", status_code=403)
     if not user.email_verified:
@@ -184,7 +222,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         "refresh_token": tokens["refresh_token"],
         "token_type": tokens.get("token_type", "bearer"),
         "user": _user_auth_payload(user),
-        "needs_admin_2fa": user.role == UserRole.admin,
+        "needs_government_2fa": is_government_officer(user.role) or is_system_admin(user.role),
     }
     return success_response(data=payload_out)
 
@@ -302,6 +340,11 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
         )
     if not user.is_active:
         raise error_response("Account is disabled. Contact support.", status_code=403)
+    if is_government_officer(user.role) or is_system_admin(user.role):
+        raise error_response(
+            "Government and system administrator accounts cannot use social sign-in.",
+            status_code=403,
+        )
 
     if claims.get("email_verified") is True:
         user.email_verified = True
@@ -319,7 +362,7 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
             "refresh_token": tokens["refresh_token"],
             "token_type": tokens.get("token_type", "bearer"),
             "user": _user_auth_payload(user),
-            "needs_admin_2fa": user.role == UserRole.admin,
+            "needs_government_2fa": is_government_officer(user.role) or is_system_admin(user.role),
         }
     )
 

@@ -30,7 +30,7 @@ def generate_invoice_number(db: Session, owner_id: int) -> str:
 def create_invoice(
     payload: InvoiceCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "staff", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "staff", "landlord"])),
 ):
     """Create invoice with standardized response"""
     # Verify lease exists and belongs to user
@@ -136,7 +136,7 @@ def record_payment(
     invoice_id: int,
     payload: InvoicePayment,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "staff", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "staff", "landlord"])),
 ):
     """Record a payment against an invoice with standardized response"""
     invoice = db.query(Invoice).filter(
@@ -191,7 +191,7 @@ def record_payment(
 def delete_invoice(
     invoice_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "staff", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "staff", "landlord"])),
 ):
     """Soft-delete an invoice (only if not paid) with standardized response"""
     invoice = db.query(Invoice).filter(

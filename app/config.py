@@ -25,6 +25,11 @@ class Settings(BaseSettings):
 
     # Auth email-link redirects + SPA (must match Vite dev server or production URL)
     frontend_base_url: str = "http://localhost:5173"
+    # Government portal entry (SPA path or subdomain path prefix)
+    government_portal_path: str = "/government/login"
+
+    # Optional comma-separated office IPs allowed for gov login (empty = no restriction)
+    government_allowed_ips: str = ""
 
     # Used in outbound emails (must reach this FastAPI instance from the user's mail client)
     api_public_base_url: str = "http://localhost:8000"

@@ -1,5 +1,7 @@
 # Uganda rent payments (MTN MoMo & Pesapal)
 
+Product order: **MTN MoMo → Pesapal → blockchain (later)** — see [PAYMENT_ROADMAP.md](./PAYMENT_ROADMAP.md).
+
 Flutterwave is **not** the default for RentDirect UG — many Uganda businesses cannot onboard there. Use:
 
 | Provider | Best for | Sign up |

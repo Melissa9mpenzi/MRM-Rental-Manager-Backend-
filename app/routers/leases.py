@@ -26,7 +26,7 @@ def get_unit_lease_status(db: Session, unit_id: int):
 def create_lease(
     payload: LeaseCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "staff", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "staff", "landlord"])),
 ):
     """Create lease with standardized response"""
     # Verify tenant exists and belongs to user
@@ -128,7 +128,7 @@ def update_lease(
     lease_id: int,
     payload: LeaseUpdate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "staff", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "staff", "landlord"])),
 ):
     """Update lease with standardized response"""
     lease = db.query(Lease).filter(
@@ -160,7 +160,7 @@ def terminate_lease(
     lease_id: int,
     payload: LeaseTerminate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles(["admin", "staff", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "staff", "landlord"])),
 ):
     """Terminate lease with standardized response"""
     lease = db.query(Lease).filter(

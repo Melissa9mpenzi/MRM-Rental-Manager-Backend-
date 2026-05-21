@@ -180,3 +180,41 @@ def html_email_verification(*, full_name: str, otp: str) -> str:
         headline="Confirm your email",
         body_html=body,
     )
+
+
+def html_government_invitation(
+    *,
+    full_name: str,
+    agency: str,
+    role_label: str,
+    invite_url: str,
+    work_id: str,
+) -> str:
+    name = _escape(full_name.strip() or "Officer")
+    body = f"""
+    <p style="margin:0 0 12px 0;text-align:center;">Dear {name},</p>
+    <p style="margin:0 0 16px 0;text-align:center;">
+      You have been invited to the <strong>RentDirect Uganda Government Portal</strong>
+      as a <strong>{_escape(role_label)}</strong> officer for <strong>{_escape(agency)}</strong>.
+    </p>
+    <p style="margin:0 0 8px 0;text-align:center;font-size:13px;color:{_COLOR_MUTED};">
+      Work ID on file: <strong style="color:{_COLOR_TEXT};">{_escape(work_id)}</strong>
+    </p>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td align="center" style="padding:16px 0 24px 0;">
+          <a href="{_escape(invite_url)}" style="display:inline-block;padding:14px 28px;background:{_COLOR_ACCENT};color:#ffffff;font-weight:700;text-decoration:none;border-radius:10px;">
+            Accept secure invitation
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;text-align:center;font-size:12px;color:{_COLOR_MUTED};">
+      This link expires in <strong>7 days</strong>. Do not share it. Government accounts cannot be created via public registration.
+    </p>
+    """
+    return wrap_email(
+        preheader="Government portal invitation — RentDirect UG",
+        headline="Government portal invitation",
+        body_html=body,
+    )

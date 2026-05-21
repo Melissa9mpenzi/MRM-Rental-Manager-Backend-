@@ -136,11 +136,11 @@ def get_my_lease(
 
 @router.get("/admin-view/all-tenants")
 def admin_view_all_tenants(
-    current_user: User = Depends(require_roles(["admin", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "landlord"])),
     db: Session = Depends(get_db)
 ):
-    """Admin/Landlord can view all tenants with standardized response"""
-    if current_user.role == "admin":
+    """System administrator / landlord can view tenants with standardized response"""
+    if current_user.role == UserRole.system_admin.value:
         tenants = db.query(Tenant).all()
     else:  # landlord
         tenants = db.query(Tenant).filter(Tenant.owner_id == current_user.id).all()
@@ -162,7 +162,7 @@ class TenantAcceptInviteRequest(BaseModel):
 @router.post("/invite/send", status_code=201)
 def send_tenant_invite(
     invite: TenantInviteRequest,
-    current_user: User = Depends(require_roles(["admin", "landlord"])),
+    current_user: User = Depends(require_roles(["system_admin", "landlord"])),
     db: Session = Depends(get_db)
 ):
     """Landlord sends invite email to tenant to create login account with standardized response"""

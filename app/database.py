@@ -30,11 +30,17 @@ class Base(DeclarativeBase):
     metadata = _metadata
 
 
+_connect_args: dict = {}
+if "postgresql" in settings.database_url.lower():
+    # Neon / remote Postgres: slow or flaky networks need more than the default timeout.
+    _connect_args["connect_timeout"] = 60
+
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
     pool_recycle=3600,
     echo=settings.environment == "development",
+    connect_args=_connect_args,
 )
 
 if postgres_table_schema:

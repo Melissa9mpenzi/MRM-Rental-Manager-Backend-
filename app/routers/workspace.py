@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_admin, require_roles
+from app.dependencies import require_system_admin, require_roles
 from app.models.user import User, UserRole
 from app.schemas.auth import UserOut
 from app.services.workspace_service import admin_list_users, admin_summary, staff_summary
@@ -22,7 +22,7 @@ class KycModerationBody(BaseModel):
 @router.get("/admin/summary")
 def get_admin_summary(
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    _: User = Depends(require_system_admin),
 ):
     data = admin_summary(db)
     return success_response(data=data)
@@ -35,7 +35,7 @@ def list_admin_users(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    _: User = Depends(require_system_admin),
 ):
     items, total = admin_list_users(
         db, search=search, role=role, limit=limit, offset=offset
@@ -48,7 +48,7 @@ def admin_kyc_review(
     user_id: int,
     body: KycModerationBody,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    _: User = Depends(require_system_admin),
 ):
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -72,7 +72,7 @@ def admin_kyc_review(
 @router.get("/staff/summary")
 def get_staff_summary(
     db: Session = Depends(get_db),
-    _: User = Depends(require_roles(["staff", "admin"])),
+    _: User = Depends(require_roles(["staff", "system_admin"])),
 ):
     data = staff_summary(db)
     return success_response(data=data)
