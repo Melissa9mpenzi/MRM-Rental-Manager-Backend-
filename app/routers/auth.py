@@ -222,7 +222,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         "refresh_token": tokens["refresh_token"],
         "token_type": tokens.get("token_type", "bearer"),
         "user": _user_auth_payload(user),
-        "needs_government_2fa": is_government_officer(user.role) or is_system_admin(user.role),
+        "needs_government_2fa": is_government_officer(user.role),
     }
     return success_response(data=payload_out)
 
@@ -362,7 +362,7 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
             "refresh_token": tokens["refresh_token"],
             "token_type": tokens.get("token_type", "bearer"),
             "user": _user_auth_payload(user),
-            "needs_government_2fa": is_government_officer(user.role) or is_system_admin(user.role),
+            "needs_government_2fa": is_government_officer(user.role),
         }
     )
 

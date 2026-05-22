@@ -1,13 +1,12 @@
 """
-Transactional email HTML — table layout, inline CSS, optional hosted logo.
+Transactional email HTML — table layout, inline CSS, system logo (Uganda coat of arms).
 """
 from __future__ import annotations
 
 import html as html_module
-from typing import Optional
 
 from app.config import settings
-
+from app.services.email_branding import resolved_logo_src_for_html
 
 # Brand palette (matches RentDirect UG frontend feel)
 _COLOR_BG = "#e9f0ec"
@@ -24,15 +23,34 @@ def _escape(s: str) -> str:
 
 
 def _logo_block() -> str:
-    """Hosted logo URL from .env, or inline wordmark (no external request)."""
-    url = (getattr(settings, "email_brand_logo_url", None) or "").strip()
+    """System logo: coat of arms + RentDirect UG wordmark (matches super-admin / gov portal)."""
+    url = resolved_logo_src_for_html()
+    name = _escape(settings.email_brand_name)
+    tagline = _escape(settings.email_product_tagline)
+
     if url:
         return f"""
-            <div align="center" style="padding:0 0 24px 0;">
-              <img src="{_escape(url)}" alt="{_escape(settings.email_brand_name)}" width="160" height="auto"
-                   style="display:block;margin:0 auto;max-width:180px;height:auto;border:0;outline:none;text-decoration:none;" />
+            <div align="center" style="padding:0 0 20px 0;">
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center">
+                <tr>
+                  <td align="center" valign="middle" style="padding:0 12px 0 0;">
+                    <img src="{_escape(url)}" alt="Coat of arms of the Republic of Uganda" width="56" height="56"
+                         style="display:block;width:56px;height:56px;border:0;outline:none;text-decoration:none;border-radius:8px;" />
+                  </td>
+                  <td align="left" valign="middle" style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                    <div style="font-size:10px;font-weight:600;color:{_COLOR_MUTED};letter-spacing:0.12em;text-transform:uppercase;margin:0 0 4px 0;">
+                      Republic of Uganda
+                    </div>
+                    <div style="font-size:20px;font-weight:700;color:{_COLOR_TEXT};letter-spacing:-0.02em;line-height:1.2;margin:0;">
+                      RentDirect <span style="color:{_COLOR_ACCENT};">UG</span>
+                    </div>
+                    <div style="font-size:11px;color:{_COLOR_MUTED};margin-top:4px;">{tagline}</div>
+                  </td>
+                </tr>
+              </table>
             </div>
             """
+
     return f"""
             <div align="center" style="padding:0 0 20px 0;">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" align="center">
@@ -43,10 +61,10 @@ def _logo_block() -> str:
                 </tr>
               </table>
               <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:20px;font-weight:700;color:{_COLOR_TEXT};letter-spacing:-0.02em;margin-top:12px;">
-                {_escape(settings.email_brand_name)}
+                {name}
               </div>
               <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:12px;color:{_COLOR_MUTED};margin-top:4px;letter-spacing:0.04em;text-transform:uppercase;">
-                {_escape(settings.email_product_tagline)}
+                {tagline}
               </div>
             </div>
             """
@@ -178,6 +196,36 @@ def html_email_verification(*, full_name: str, otp: str) -> str:
     return wrap_email(
         preheader=f"Verify your email — code {otp}",
         headline="Confirm your email",
+        body_html=body,
+    )
+
+
+def html_government_2fa_otp(*, full_name: str, otp: str) -> str:
+    name = _escape(full_name.strip() or "Officer")
+    otp_esc = _escape(otp)
+    body = f"""
+    <p style="margin:0 0 8px 0;text-align:center;">Hello {name},</p>
+    <p style="margin:0 0 20px 0;text-align:center;">
+      Use this one-time code to complete <strong>two-factor sign-in</strong> to the RentDirect Uganda Government Portal.
+      Do not share this code with anyone.
+    </p>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td align="center" style="padding:8px 0 24px 0;">
+          <div style="display:inline-block;padding:20px 36px;background:{_COLOR_BG};border-radius:12px;border:1px dashed {_COLOR_BORDER};">
+            <span style="font-family:'SF Mono',Consolas,Monaco,monospace;font-size:32px;font-weight:700;letter-spacing:0.45em;color:{_COLOR_ACCENT_DARK};">{otp_esc}</span>
+          </div>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;text-align:center;font-size:13px;color:{_COLOR_MUTED};">
+      This code expires in <strong style="color:{_COLOR_TEXT};">15 minutes</strong>.
+      If you did not attempt to sign in, contact your agency administrator immediately.
+    </p>
+    """
+    return wrap_email(
+        preheader=f"Government portal sign-in code: {otp}",
+        headline="Your verification code",
         body_html=body,
     )
 

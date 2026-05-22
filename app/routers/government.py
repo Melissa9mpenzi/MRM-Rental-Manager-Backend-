@@ -29,9 +29,10 @@ class KccaDecisionBody(BaseModel):
 @router.get("/overview")
 def government_overview(
     db: Session = Depends(get_db),
-    _: User = Depends(require_government),
+    user: User = Depends(require_government),
 ):
-    return success_response(data=government_service.overview_summary(db))
+    agency = government_service.agency_for_user(user)
+    return success_response(data=government_service.overview_summary(db, agency=agency))
 
 
 @router.get("/nira/queue")
@@ -105,9 +106,10 @@ def ura_reports(
 def fraud_alerts(
     limit: int = 30,
     db: Session = Depends(get_db),
-    _: User = Depends(require_government),
+    user: User = Depends(require_government),
 ):
-    return success_response(data=government_service.fraud_alerts(db, limit=limit))
+    agency = government_service.agency_for_user(user)
+    return success_response(data=government_service.fraud_alerts(db, agency=agency, limit=limit))
 
 
 @router.get("/audit-logs")

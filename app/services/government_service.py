@@ -18,6 +18,156 @@ def _role_val(role) -> str:
     return role.value if hasattr(role, "value") else str(role)
 
 
+def agency_for_user(user: User) -> str:
+    """nira | kcca | ura | all (system administrator)."""
+    role = _role_val(user.role)
+    if role == UserRole.system_admin.value:
+        return "all"
+    if role == UserRole.gov_nira.value:
+        return "nira"
+    if role == UserRole.gov_kcca.value:
+        return "kcca"
+    if role == UserRole.gov_ura.value:
+        return "ura"
+    return "all"
+
+
+def _normalize_district(name: Optional[str]) -> str:
+    raw = (name or "").strip() or "Unknown"
+    known = {
+        "kampala": "Kampala",
+        "wakiso": "Wakiso",
+        "mukono": "Mukono",
+        "jinja": "Jinja",
+        "gulu": "Gulu",
+        "mbarara": "Mbarara",
+        "entebbe": "Entebbe",
+        "mbale": "Mbale",
+        "masaka": "Masaka",
+    }
+    return known.get(raw.lower(), raw.title() if raw else "Unknown")
+
+
+def _regional_compliance_db(db: Session, *, agency: str = "all") -> list[dict]:
+    """District compliance from live property (and payment) data."""
+    districts: dict[str, dict] = {}
+
+    props = (
+        db.query(Property.district, Property.gov_verification_status, func.count(Property.id))
+        .group_by(Property.district, Property.gov_verification_status)
+        .all()
+    )
+    for district, status, cnt in props:
+        name = _normalize_district(district)
+        if name not in districts:
+            districts[name] = {"total": 0, "verified": 0, "pending": 0}
+        districts[name]["total"] += int(cnt or 0)
+        if status == "verified":
+            districts[name]["verified"] += int(cnt or 0)
+        elif status in ("pending", "inspection"):
+            districts[name]["pending"] += int(cnt or 0)
+
+    if agency == "ura":
+        pay_rows = (
+            db.query(Property.district, func.count(Payment.id))
+            .join(Property, Payment.property_id == Property.id)
+            .filter(
+                Payment.is_deleted == False,
+                Payment.payment_type == PaymentType.rent,
+            )
+            .group_by(Property.district)
+            .all()
+        )
+        for district, cnt in pay_rows:
+            name = _normalize_district(district)
+            if name not in districts:
+                districts[name] = {"total": 0, "verified": 0, "pending": 0}
+            districts[name]["verified"] = max(districts[name]["verified"], int(cnt or 0))
+
+    if not districts:
+        return []
+
+    out = []
+    for district, stats in districts.items():
+        total = max(stats["total"], 1)
+        if agency == "nira":
+            score = min(99, 60 + int(100 * stats["verified"] / total))
+        elif agency == "ura":
+            score = min(99, 55 + int(100 * stats["verified"] / total))
+        else:
+            score = min(99, int(100 * stats["verified"] / total))
+        out.append(
+            {
+                "district": district,
+                "score": score,
+                "count": stats["total"],
+                "properties": stats["total"],
+                "pending": stats["pending"],
+            }
+        )
+    out.sort(key=lambda x: (-x["score"], -x["count"]))
+    return out[:12]
+
+
+def _last_six_month_buckets(today: date) -> list[tuple[datetime, datetime, str]]:
+    """Return (start, end, label) for each of the last six calendar months."""
+    MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    buckets: list[tuple[datetime, datetime, str]] = []
+    for i in range(5, -1, -1):
+        m = today.month - i
+        y = today.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        start_dt = datetime(y, m, 1)
+        if m == 12:
+            end_dt = datetime(y + 1, 1, 1)
+        else:
+            end_dt = datetime(y, m + 1, 1)
+        buckets.append((start_dt, end_dt, MONTHS[m - 1]))
+    return buckets
+
+
+def _build_activity_trend(db: Session) -> list[dict[str, Any]]:
+    """Monthly activity from KYC submissions, new properties, and rent volume."""
+    trend: list[dict[str, Any]] = []
+    for start_dt, end_dt, label in _last_six_month_buckets(date.today()):
+        nira = (
+            db.query(func.count(User.id))
+            .filter(User.kyc_submitted_at >= start_dt, User.kyc_submitted_at < end_dt)
+            .scalar()
+            or 0
+        )
+        kcca = (
+            db.query(func.count(Property.id))
+            .filter(Property.created_at >= start_dt, Property.created_at < end_dt)
+            .scalar()
+            or 0
+        )
+        m, y = start_dt.month, start_dt.year
+        ura_val = (
+            db.query(func.coalesce(func.sum(Payment.amount), 0))
+            .filter(
+                Payment.is_deleted == False,
+                Payment.payment_type == PaymentType.rent,
+                Payment.period_month == int(m),
+                Payment.period_year == int(y),
+            )
+            .scalar()
+        )
+        if ura_val is None:
+            ura_val = Decimal("0")
+        trend.append(
+            {
+                "month": label,
+                "nira": int(nira),
+                "kcca": int(kcca),
+                "ura": int(float(ura_val)),
+            }
+        )
+    return trend
+
+
 def _log_gov_action(
     db: Session,
     *,
@@ -39,7 +189,8 @@ def _log_gov_action(
     )
 
 
-def overview_summary(db: Session) -> dict[str, Any]:
+def overview_summary(db: Session, *, agency: str = "all") -> dict[str, Any]:
+    agency = (agency or "all").lower()
     users_total = db.query(func.count(User.id)).scalar() or 0
     pending_kyc = (
         db.query(func.count(User.id))
@@ -103,36 +254,29 @@ def overview_summary(db: Session) -> dict[str, Any]:
     )
 
     verification_breakdown = [
-        {"name": "NIRA Verified", "value": verified_users, "color": "#00C896"},
-        {"name": "KCCA Verified", "value": verified_properties, "color": "#22D3EE"},
-        {"name": "URA Compliant", "value": int(float(tax_revenue) > 0), "color": "#A78BFA"},
-        {"name": "Pending Review", "value": pending_kyc + pending_properties, "color": "#F59E0B"},
-        {"name": "Rejected / Flagged", "value": flagged, "color": "#EF4444"},
+        {"name": "Verified", "value": int(verified_users), "color": "#00C896"},
+        {"name": "Pending KYC", "value": int(pending_kyc), "color": "#A78BFA"},
+        {"name": "Rejected", "value": int(flagged), "color": "#EF4444"},
     ]
 
-    MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    kyc_total = db.query(func.count(User.id)).filter(User.kyc_submitted_at.isnot(None)).scalar() or 0
-    prop_total = db.query(func.count(Property.id)).scalar() or 0
-    activity_trend = []
-    for i, label in enumerate(MONTHS[-6:]):
-        activity_trend.append(
-            {
-                "month": label,
-                "nira": int(kyc_total * (0.12 + i * 0.02)),
-                "kcca": int(prop_total * (0.08 + i * 0.015)),
-                "ura": int(prop_total * (0.05 + i * 0.01)),
-            }
+    activity_trend = _build_activity_trend(db)
+
+    rent_payments_mtd = (
+        db.query(func.count(Payment.id))
+        .filter(
+            Payment.is_deleted == False,
+            Payment.payment_type == PaymentType.rent,
+            Payment.period_month == today.month,
+            Payment.period_year == today.year,
         )
+        .scalar()
+        or 0
+    )
 
-    regions = [
-        {"district": "Kampala", "score": 92},
-        {"district": "Wakiso", "score": 88},
-        {"district": "Mukono", "score": 74},
-        {"district": "Jinja", "score": 81},
-        {"district": "Mbarara", "score": 69},
-    ]
+    regions = _regional_compliance_db(db, agency=agency)
 
-    return {
+    payload: dict[str, Any] = {
+        "agency": agency,
         "verified_users": int(verified_users),
         "pending_kyc": int(pending_kyc),
         "flagged_accounts": int(flagged),
@@ -147,6 +291,34 @@ def overview_summary(db: Session) -> dict[str, Any]:
         "regional_compliance": regions,
         "system_status": "operational",
     }
+
+    if agency == "nira":
+        payload["verification_breakdown"] = [
+            {"name": "Verified", "value": int(verified_users), "color": "#00C896"},
+            {"name": "Pending KYC", "value": int(pending_kyc), "color": "#A78BFA"},
+            {"name": "Rejected", "value": int(flagged), "color": "#EF4444"},
+        ]
+        payload["activity_trend"] = [{"month": t["month"], "nira": t["nira"]} for t in activity_trend]
+    elif agency == "kcca":
+        payload["verification_breakdown"] = [
+            {"name": "Verified", "value": int(verified_properties), "color": "#22D3EE"},
+            {"name": "Pending", "value": int(pending_properties), "color": "#F59E0B"},
+            {
+                "name": "Rejected / Illegal",
+                "value": max(0, int(properties_total) - int(verified_properties) - int(pending_properties)),
+                "color": "#EF4444",
+            },
+        ]
+        payload["activity_trend"] = [{"month": t["month"], "kcca": t["kcca"]} for t in activity_trend]
+    elif agency == "ura":
+        payload["verification_breakdown"] = [
+            {"name": "Compliant", "value": int(rent_payments_mtd), "color": "#EAB308"},
+            {"name": "Pending", "value": int(pending_kyc), "color": "#A78BFA"},
+            {"name": "Under review", "value": int(pending_properties), "color": "#22D3EE"},
+        ]
+        payload["activity_trend"] = [{"month": t["month"], "ura": t["ura"]} for t in activity_trend]
+
+    return payload
 
 
 def nira_queue(db: Session, *, status: Optional[str] = None, limit: int = 50) -> list[dict]:
@@ -299,7 +471,8 @@ def ura_rental_reports(db: Session, *, limit: int = 50) -> list[dict]:
     return out
 
 
-def fraud_alerts(db: Session, *, limit: int = 30) -> list[dict]:
+def fraud_alerts(db: Session, *, agency: str = "all", limit: int = 30) -> list[dict]:
+    agency = (agency or "all").lower()
     alerts = []
     rejected = (
         db.query(User)
@@ -308,52 +481,86 @@ def fraud_alerts(db: Session, *, limit: int = 30) -> list[dict]:
         .limit(10)
         .all()
     )
-    for u in rejected:
-        alerts.append(
-            {
-                "id": f"identity-{u.id}",
-                "type": "identity",
-                "severity": "high",
-                "title": "Identity verification failed",
-                "subject": u.full_name,
-                "detail": f"KYC rejected for {u.email}",
-                "created_at": u.updated_at.isoformat() if u.updated_at else None,
-            }
+    if agency in ("all", "nira"):
+        for u in rejected:
+            alerts.append(
+                {
+                    "id": f"identity-{u.id}",
+                    "type": "identity",
+                    "severity": "high",
+                    "title": "Identity verification failed",
+                    "subject": u.full_name,
+                    "detail": f"KYC rejected for {u.email}",
+                    "created_at": u.updated_at.isoformat() if u.updated_at else None,
+                }
+            )
+    if agency in ("all", "kcca"):
+        illegal = (
+            db.query(Property)
+            .filter(or_(Property.gov_verification_status == "illegal", Property.gov_verification_status == "rejected"))
+            .limit(10)
+            .all()
         )
-    illegal = (
-        db.query(Property)
-        .filter(or_(Property.gov_verification_status == "illegal", Property.gov_verification_status == "rejected"))
-        .limit(10)
-        .all()
-    )
-    for p in illegal:
-        alerts.append(
-            {
-                "id": f"property-{p.id}",
-                "type": "property",
-                "severity": "high",
-                "title": "Illegal or rejected listing",
-                "subject": p.name,
-                "detail": p.address,
-                "created_at": p.updated_at.isoformat() if p.updated_at else None,
-            }
+        for p in illegal:
+            alerts.append(
+                {
+                    "id": f"property-{p.id}",
+                    "type": "property",
+                    "severity": "high",
+                    "title": "Illegal or rejected listing",
+                    "subject": p.name,
+                    "detail": p.address or p.district,
+                    "created_at": p.updated_at.isoformat() if p.updated_at else None,
+                }
+            )
+    if agency in ("all", "ura"):
+        pending_tax = (
+            db.query(Payment, Property, User)
+            .outerjoin(Property, Payment.property_id == Property.id)
+            .outerjoin(User, Property.owner_id == User.id)
+            .filter(Payment.is_deleted == False, Payment.payment_type == PaymentType.rent)
+            .order_by(Payment.payment_date.desc())
+            .limit(8)
+            .all()
         )
+        for pay, prop, landlord in pending_tax:
+            if float(pay.amount or 0) <= 0:
+                continue
+            alerts.append(
+                {
+                    "id": f"tax-{pay.id}",
+                    "type": "tax",
+                    "severity": "medium",
+                    "title": "Rental income requires tax review",
+                    "subject": landlord.full_name if landlord else "Landlord",
+                    "detail": f"{prop.name if prop else 'Property'} · UGX {float(pay.amount or 0):,.0f}",
+                    "created_at": pay.payment_date.isoformat() if pay.payment_date else None,
+                }
+            )
     return alerts[:limit]
 
 
 def audit_trail(db: Session, *, limit: int = 100) -> list[dict]:
-    rows = db.query(AuditLog).order_by(AuditLog.created_at.desc()).limit(limit).all()
+    rows = (
+        db.query(AuditLog, User)
+        .outerjoin(User, AuditLog.user_id == User.id)
+        .order_by(AuditLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
     out = []
-    for row in rows:
+    for log, actor in rows:
         out.append(
             {
-                "id": row.id,
-                "user_id": row.user_id,
-                "action": row.action,
-                "module": row.table_name,
-                "details": row.new_value or row.old_value,
-                "record_id": row.record_id,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "id": log.id,
+                "user_id": log.user_id,
+                "user": actor.full_name if actor else ("System" if not log.user_id else f"Officer #{log.user_id}"),
+                "action": log.action,
+                "module": log.table_name,
+                "details": log.new_value or log.old_value,
+                "record_id": log.record_id,
+                "ip_address": log.ip_address,
+                "created_at": log.created_at.isoformat() if log.created_at else None,
             }
         )
     return out

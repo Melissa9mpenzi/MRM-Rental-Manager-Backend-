@@ -9,7 +9,12 @@ from app.database import get_db
 from app.dependencies import require_system_admin, require_roles
 from app.models.user import User, UserRole
 from app.schemas.auth import UserOut
-from app.services.workspace_service import admin_list_users, admin_summary, staff_summary
+from app.services.workspace_service import (
+    admin_list_properties,
+    admin_list_users,
+    admin_summary,
+    staff_summary,
+)
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/workspace", tags=["Workspace"])
@@ -39,6 +44,27 @@ def list_admin_users(
 ):
     items, total = admin_list_users(
         db, search=search, role=role, limit=limit, offset=offset
+    )
+    return success_response(data={"items": items, "total": total, "limit": limit, "offset": offset})
+
+
+@router.get("/admin/properties")
+def list_admin_properties(
+    search: Optional[str] = Query(None),
+    district: Optional[str] = Query(None),
+    active_only: bool = Query(False),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    items, total = admin_list_properties(
+        db,
+        search=search,
+        district=district,
+        active_only=active_only,
+        limit=limit,
+        offset=offset,
     )
     return success_response(data={"items": items, "total": total, "limit": limit, "offset": offset})
 

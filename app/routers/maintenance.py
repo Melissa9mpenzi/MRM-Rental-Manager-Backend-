@@ -12,7 +12,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.services import maintenance_service
-from app.config import settings
+from app.runtime import upload_root
 from app.utils.response import success_response, error_response
 
 router = APIRouter(prefix="/maintenance", tags=["Maintenance"])
@@ -111,7 +111,7 @@ async def create_request(
         title=title,
         description=description,
         priority=priority,
-        upload_dir=settings.upload_dir,
+        upload_dir=upload_root(),
         photo=photo,
         reported_by=reported_by,
     )

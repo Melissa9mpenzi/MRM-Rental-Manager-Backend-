@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import asyncio
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from app.config import settings
+from app.runtime import is_serverless, upload_root
 from app.routers import (
     auth,
     properties,
@@ -26,35 +29,30 @@ from app.routers import (
     government_auth,
 )
 
-# Ensure upload subdirectories exist
+# Writable upload root (Vercel/Lambda only allow /tmp; project dir is read-only).
+UPLOAD_ROOT = upload_root()
 for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance", "kyc"]:
-    os.makedirs(os.path.join(settings.upload_dir, sub), exist_ok=True)
+    os.makedirs(os.path.join(UPLOAD_ROOT, sub), exist_ok=True)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    import logging
-
-    from app.config import settings
+async def lifespan(app: FastAPI):
     from app.services.gateway.config import gateway_public_status, is_gateway_configured
-    from app.utils.init_db import (
-        ensure_government_schema_migrations,
-    ensure_government_invitation_tables,
-        ensure_payment_checkout_table,
-        ensure_payments_column_migrations,
-        ensure_tenants_column_migrations,
-        ensure_users_column_migrations,
-    )
+    from app.utils.init_db import run_startup_migrations
 
-    ensure_users_column_migrations()
-    ensure_tenants_column_migrations()
-    ensure_payments_column_migrations()
-    ensure_payment_checkout_table()
-    ensure_government_schema_migrations()
-    ensure_government_invitation_tables()
+    log = logging.getLogger("uvicorn.error")
+
+    migration_task = None
+    if not is_serverless() and not settings.skip_startup_migrations:
+        async def _background_migrations() -> None:
+            try:
+                await asyncio.to_thread(run_startup_migrations)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Background startup migrations failed: %s", exc)
+
+        migration_task = asyncio.create_task(_background_migrations())
 
     gw = gateway_public_status()
-    log = logging.getLogger("uvicorn.error")
     if settings.environment == "production" and not is_gateway_configured():
         log.error(
             "PAYMENTS: gateway not configured — set MTN MoMo or Pesapal keys (see docs/PAYMENT_GATEWAY.md)."
@@ -68,17 +66,28 @@ async def lifespan(_app: FastAPI):
             gw.get("mode"),
         )
 
+    # Accept HTTP immediately; migrations run in background (avoids reload timeouts).
     yield
 
+    if migration_task is not None:
+        migration_task.cancel()
+        try:
+            await migration_task
+        except asyncio.CancelledError:
+            pass
 
-app = FastAPI(
-    title="RentalMGR API",
-    version="1.0.0",
-    description="MRM Rental Manager — Property, Tenant & Payment Management API",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan,
-)
+
+_app_kwargs: dict = {
+    "title": "RentalMGR API",
+    "version": "1.0.0",
+    "description": "MRM Rental Manager — Property, Tenant & Payment Management API",
+    "docs_url": "/docs",
+    "redoc_url": "/redoc",
+}
+if not is_serverless():
+    _app_kwargs["lifespan"] = lifespan
+
+app = FastAPI(**_app_kwargs)
 
 # CORS — explicit origins (merge so a narrow .env ALLOWED_ORIGINS never drops common Vite ports)
 _local_vite = [
@@ -87,7 +96,13 @@ _local_vite = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
 ]
-_cors_origins = list(dict.fromkeys(_local_vite + list(settings.allowed_origins)))
+_production_spa_origins = [
+    "https://mrm-rental-manager-frontend-pink.vercel.app",
+    "https://mrm-rental-manager-mobile.vercel.app",
+]
+_cors_origins = list(
+    dict.fromkeys(_local_vite + _production_spa_origins + list(settings.allowed_origins))
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -96,7 +111,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 API = "/api/v1"
 app.include_router(auth.router,         prefix=API)
@@ -116,6 +131,21 @@ app.include_router(saved_units.router, prefix=API)
 app.include_router(messages.router,    prefix=API)
 app.include_router(government.router,  prefix=API)
 app.include_router(government_auth.router, prefix=API)
+
+
+@app.get("/", tags=["Health"])
+def root():
+    """Landing for deploy previews and uptime checks (Vercel opens `/` by default)."""
+    return {
+        "service": "RentalMGR API",
+        "status": "ok",
+        "version": "1.0.0",
+        "health": "/health",
+        "docs": "/docs",
+        "api": API,
+        "frontend": "https://mrm-rental-manager-frontend-pink.vercel.app",
+        "mobile_web": "https://mrm-rental-manager-mobile.vercel.app",
+    }
 
 
 @app.get("/health", tags=["Health"])

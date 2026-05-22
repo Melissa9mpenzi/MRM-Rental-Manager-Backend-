@@ -3,12 +3,19 @@ import random
 import string
 import secrets
 
+from email.mime.image import MIMEImage
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 from app.config import settings
+from app.services.email_branding import (
+    LOGO_CONTENT_ID,
+    logo_bytes,
+    should_embed_logo_inline,
+)
 from app.services.email_templates import (
     html_email_verification,
+    html_government_2fa_otp,
     html_government_invitation,
     html_password_reset,
 )
@@ -24,27 +31,52 @@ def generate_verification_token(length: int = 32) -> str:
 
 
 def send_email(to_email: str, subject: str, html_body: str) -> bool:
-    """Send email via SMTP. Returns True on success, False on failure."""
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = settings.smtp_from
-        msg["To"] = to_email
-        msg.attach(MIMEText(html_body, "html"))
+    """Send email via SMTP. Returns True if the message was handed off to the server."""
+    if not settings.smtp_from or not settings.smtp_host:
+        print("[EMAIL ERROR] SMTP_FROM or SMTP_HOST is not configured.")
+        return False
 
-        # Do not block API responses for 30s+ when SMTP is wrong or unreachable.
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=8) as server:
-            server.sock.settimeout(8)
+    msg = MIMEMultipart("related")
+    msg["Subject"] = subject
+    msg["From"] = settings.smtp_from
+    msg["To"] = to_email
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText(html_body, "html"))
+    msg.attach(alt)
+
+    if should_embed_logo_inline():
+        raw = logo_bytes()
+        if raw:
+            img = MIMEImage(raw, _subtype="png")
+            img.add_header("Content-ID", f"<{LOGO_CONTENT_ID}>")
+            img.add_header("Content-Disposition", "inline", filename="uganda-coat-of-arms.png")
+            msg.attach(img)
+
+    body = msg.as_string()
+
+    server = None
+    try:
+        server = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=8)
+        server.sock.settimeout(8)
+        server.ehlo()
+        if settings.smtp_tls:
+            server.starttls()
             server.ehlo()
-            if settings.smtp_tls:
-                server.starttls()
-            if settings.smtp_user and settings.smtp_password:
-                server.login(settings.smtp_user, settings.smtp_password)
-            server.sendmail(settings.smtp_from, to_email, msg.as_string())
+        if settings.smtp_user and settings.smtp_password:
+            server.login(settings.smtp_user, settings.smtp_password)
+        server.sendmail(settings.smtp_from, [to_email], body)
         return True
     except Exception as e:
         print(f"[EMAIL ERROR] {e}")
         return False
+    finally:
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                # Gmail and others often close the socket after sendmail; mail was still delivered.
+                pass
 
 
 def send_registration_verification_link(
@@ -86,4 +118,10 @@ def send_government_invitation_email(
 def send_password_reset_otp(to_email: str, otp: str) -> bool:
     subject = f"Password reset · {settings.email_brand_name}"
     html = html_password_reset(otp=otp)
+    return send_email(to_email, subject, html)
+
+
+def send_government_2fa_otp(*, to_email: str, full_name: str, otp: str) -> bool:
+    subject = f"Government portal sign-in code · {settings.email_brand_name}"
+    html = html_government_2fa_otp(full_name=full_name, otp=otp)
     return send_email(to_email, subject, html)

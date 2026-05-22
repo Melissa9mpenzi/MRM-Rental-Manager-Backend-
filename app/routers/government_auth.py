@@ -31,7 +31,7 @@ def create_officer_invitation(
     inviter: User = Depends(require_system_admin),
 ):
     try:
-        inv, dev_token = gov_invite.create_invitation(
+        inv, meta = gov_invite.create_invitation(
             db,
             inviter=inviter,
             full_name=body.full_name,
@@ -43,6 +43,7 @@ def create_officer_invitation(
         )
     except ValueError as e:
         raise error_response(str(e), status_code=400) from e
+    email_sent = bool(meta.get("email_sent"))
     data = {
         "id": inv.id,
         "email": inv.email,
@@ -50,10 +51,20 @@ def create_officer_invitation(
         "role": inv.role.value,
         "status": inv.status.value,
         "expires_at": inv.expires_at.isoformat() if inv.expires_at else None,
+        "email_sent": email_sent,
     }
-    if dev_token:
-        data["dev_invite_token"] = dev_token
-    return success_response(data=data, message="Invitation sent.")
+    if meta.get("dev_invite_token"):
+        data["dev_invite_token"] = meta["dev_invite_token"]
+    if not email_sent and meta.get("invite_url"):
+        data["invite_url"] = meta["invite_url"]
+    if email_sent:
+        message = f"Invitation email sent to {inv.email}."
+    else:
+        message = (
+            "Invitation saved, but the email could not be sent. "
+            "Configure SMTP in the backend .env file, or use the invite link below."
+        )
+    return success_response(data=data, message=message)
 
 
 @router.get("/invitations")
@@ -121,6 +132,25 @@ def government_verify_2fa(
     except ValueError as e:
         raise error_response(str(e), status_code=400) from e
     return success_response(message="Two-factor verification recorded.")
+
+
+@router.post("/auth/resend-2fa")
+def government_resend_2fa(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    try:
+        data = gov_invite.resend_government_2fa_otp(db, current_user)
+    except ValueError as e:
+        raise error_response(str(e), status_code=400) from e
+    if data.get("otp_email_sent"):
+        message = f"New verification code sent to {current_user.email}."
+    else:
+        message = (
+            "Could not send email — check SMTP settings. "
+            "In development, use the code shown in the API terminal or dev_gov_2fa_otp in the response."
+        )
+    return success_response(data=data, message=message)
 
 
 @router.get("/auth/sessions")

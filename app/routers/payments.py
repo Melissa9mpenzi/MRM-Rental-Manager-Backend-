@@ -165,8 +165,11 @@ def download_receipt(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    pdf_path = payment_service.generate_receipt_pdf(db, payment_id, current_user.id, settings.upload_dir)
-    full_path = pdf_path.replace("/uploads/", f"{settings.upload_dir}/")
+    from app.runtime import upload_root
+
+    root = upload_root()
+    pdf_path = payment_service.generate_receipt_pdf(db, payment_id, current_user.id, root)
+    full_path = pdf_path.replace("/uploads/", f"{root}/")
     return FileResponse(
         full_path,
         media_type="application/pdf",
@@ -194,7 +197,9 @@ async def upload_proof(
     if not p:
         raise error_response("Payment not found.", status_code=404)
 
-    dest_dir = os.path.join(settings.upload_dir, "receipts", "proofs")
+    from app.runtime import upload_root
+
+    dest_dir = os.path.join(upload_root(), "receipts", "proofs")
     os.makedirs(dest_dir, exist_ok=True)
     ext = os.path.splitext(file.filename)[1].lower() or ".jpg"
     fname = f"proof_{payment_id:05d}_{uuid.uuid4().hex[:8]}{ext}"

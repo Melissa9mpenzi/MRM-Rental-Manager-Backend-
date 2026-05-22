@@ -14,13 +14,61 @@ from app.models.user import User, UserRole, is_government_officer, is_system_adm
 from app.schemas.auth import UserOut
 from app.services.audit_service import log_action
 from app.services.auth_service import auth_service
-from app.services.email_service import generate_verification_token, send_government_invitation_email
+from app.services.email_service import (
+    generate_otp,
+    generate_verification_token,
+    send_government_2fa_otp,
+    send_government_invitation_email,
+)
 
 AGENCY_ROLE_MAP = {
     "nira": UserRole.gov_nira,
     "kcca": UserRole.gov_kcca,
     "ura": UserRole.gov_ura,
 }
+
+GOV_2FA_OTP_MINUTES = 15
+
+
+def _utc_now_naive() -> datetime:
+    """Naive UTC for TIMESTAMP WITHOUT TIME ZONE columns (consistent read/write)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _normalize_otp_digits(code: str) -> str:
+    digits = "".join(c for c in (code or "") if c.isdigit())
+    return digits[:6] if len(digits) >= 6 else digits
+
+
+def _otp_expiry_naive(exp: Optional[datetime]) -> Optional[datetime]:
+    if not exp:
+        return None
+    if exp.tzinfo is not None:
+        return exp.astimezone(timezone.utc).replace(tzinfo=None)
+    return exp
+
+
+def issue_and_email_gov_2fa_otp(db: Session, user: User) -> tuple[str, bool]:
+    """Generate a 6-digit portal 2FA code, store on user, email to official address."""
+    otp = generate_otp()
+    expiry = _utc_now_naive() + timedelta(minutes=GOV_2FA_OTP_MINUTES)
+    user.gov_2fa_otp = otp
+    user.gov_2fa_otp_expiry = expiry
+    db.commit()
+    db.refresh(user)
+
+    sent = send_government_2fa_otp(
+        to_email=user.email,
+        full_name=user.full_name,
+        otp=otp,
+    )
+    if not sent:
+        print(
+            f"\n[WARN] Government 2FA email was NOT sent (check SMTP in .env).\n"
+            f"       Officer: {user.email}\n"
+            f"       Sign-in code (valid {GOV_2FA_OTP_MINUTES} min): {otp}\n"
+        )
+    return otp, sent
 
 
 def _government_portal_url(path_suffix: str = "/login") -> str:
@@ -85,7 +133,7 @@ def create_invitation(
     agency: str,
     role: UserRole,
     work_id: str,
-) -> tuple[GovernmentInvitation, Optional[str]]:
+) -> tuple[GovernmentInvitation, dict[str, Any]]:
     email = email.strip().lower()
     agency = agency.lower().strip()
     role = _role_for_agency(agency, role)
@@ -122,7 +170,7 @@ def create_invitation(
     db.refresh(inv)
 
     invite_url = f"{_government_portal_url('/accept-invite')}?token={token}"
-    sent = send_government_invitation_email(
+    email_sent = send_government_invitation_email(
         email,
         full_name=inv.full_name,
         agency=agency.upper(),
@@ -130,16 +178,32 @@ def create_invitation(
         invite_url=invite_url,
         work_id=work_id,
     )
+    if not email_sent:
+        print(
+            f"\n[WARN] Government invitation email was NOT sent to {email!r}.\n"
+            f"       Configure SMTP in .env (SMTP_HOST, SMTP_USER, SMTP_PASSWORD, SMTP_FROM).\n"
+            f"       Invite link: {invite_url}\n"
+        )
     log_action(
         db,
         user_id=inviter.id,
         action="gov_invitation_created",
         table_name="government_invitations",
         record_id=inv.id,
-        new_value={"email": email, "agency": agency, "role": role.value},
+        new_value={
+            "email": email,
+            "agency": agency,
+            "role": role.value,
+            "email_sent": email_sent,
+        },
     )
-    dev_token = token if settings.environment == "development" else None
-    return inv, dev_token
+    meta: dict[str, Any] = {
+        "email_sent": email_sent,
+        "invite_url": invite_url,
+    }
+    if settings.environment == "development":
+        meta["dev_invite_token"] = token
+    return inv, meta
 
 
 def list_invitations(db: Session, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -304,6 +368,7 @@ def government_login(
         raise ValueError("Complete your invitation onboarding before signing in.")
 
     tokens = auth_service.create_tokens(db, user)
+    otp, otp_email_sent = issue_and_email_gov_2fa_otp(db, user)
     record_gov_login_attempt(
         db,
         email=email,
@@ -321,28 +386,83 @@ def government_login(
         ip_address=ip_address,
         new_value={"user_agent": (user_agent or "")[:200]},
     )
-
-    return {
+    payload: dict[str, Any] = {
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
         "token_type": "bearer",
         "user": UserOut.model_validate(user).model_dump(),
         "needs_government_2fa": True,
+        "otp_email_sent": otp_email_sent,
     }
+    if not otp_email_sent and settings.environment == "development":
+        payload["dev_gov_2fa_otp"] = otp
+    return payload
+
+
+def resend_government_2fa_otp(db: Session, user: User) -> dict[str, Any]:
+    if not is_government_officer(user.role) and not is_system_admin(user.role):
+        raise ValueError("Two-factor codes are only for government portal accounts.")
+    otp, sent = issue_and_email_gov_2fa_otp(db, user)
+    out: dict[str, Any] = {"otp_email_sent": sent, "email": user.email}
+    if not sent and settings.environment == "development":
+        out["dev_gov_2fa_otp"] = otp
+    return out
 
 
 def verify_government_2fa(db: Session, user: User, code: str) -> None:
-    digits = "".join(c for c in code if c.isdigit())
+    digits = _normalize_otp_digits(code)
     if len(digits) < 6:
-        raise ValueError("Enter a valid 6-digit verification code.")
-    if not user.gov_2fa_enabled and settings.environment != "development":
-        raise ValueError("Two-factor authentication is not configured for this account.")
+        raise ValueError("Enter the 6-digit code from your email.")
+    if not is_government_officer(user.role) and not is_system_admin(user.role):
+        raise ValueError("This account is not authorized for government portal 2FA.")
+
+    db_user = db.get(User, user.id)
+    if not db_user:
+        raise ValueError("User account not found.")
+
+    stored = (db_user.gov_2fa_otp or "").strip()
+    exp = _otp_expiry_naive(db_user.gov_2fa_otp_expiry)
+    now = _utc_now_naive()
+
+    if not stored:
+        from app.models.audit import AuditLog
+
+        recent_verify = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.user_id == db_user.id,
+                AuditLog.action == "gov_2fa_verified",
+                AuditLog.created_at >= now - timedelta(minutes=5),
+            )
+            .order_by(AuditLog.created_at.desc())
+            .first()
+        )
+        if recent_verify:
+            return
+        raise ValueError(
+            "No active verification code. Sign in again or tap “Resend code” for a new email."
+        )
+
+    if not exp or now > exp:
+        raise ValueError(
+            "This code has expired. Tap “Resend code to my email” or sign in again for a new code."
+        )
+
+    if digits != stored[:6]:
+        raise ValueError(
+            "That code does not match. Use the code from your most recent email "
+            "(resend or sign-in sends a new one)."
+        )
+
+    db_user.gov_2fa_otp = None
+    db_user.gov_2fa_otp_expiry = None
+    db.commit()
     log_action(
         db,
-        user_id=user.id,
+        user_id=db_user.id,
         action="gov_2fa_verified",
         table_name="users",
-        record_id=user.id,
+        record_id=db_user.id,
     )
 
 

@@ -19,6 +19,9 @@ venv/
 # Uploads & local data
 uploads/
 
+# Local dev — skip repeated Neon migration checks on uvicorn reload
+.startup_migrations.stamp
+
 # IDE
 .vscode/
 .idea/

@@ -21,6 +21,7 @@ Uses schema ``rental_mgr`` by default (see ``database_schema`` in config) so tab
 do not collide with Neon Auth / other ``public.*`` objects.
 """
 import logging
+from pathlib import Path
 
 from sqlalchemy import inspect, text
 
@@ -48,6 +49,10 @@ from app.models import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+# Bump when startup migration steps change; local stamp skips slow Neon round-trips on reload.
+_STARTUP_STAMP_VERSION = "v10-gov-2fa-otp"
+_STARTUP_STAMP_FILE = Path(__file__).resolve().parent.parent.parent / ".startup_migrations.stamp"
 
 
 def init_tables() -> None:
@@ -128,6 +133,8 @@ def ensure_users_column_migrations() -> None:
         ("gov_work_id", "VARCHAR(64) NULL", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
         ("gov_security_pin_hash", "VARCHAR(255) NULL", "VARCHAR(255) NULL", "VARCHAR(255) NULL"),
         ("gov_2fa_enabled", "BOOLEAN NOT NULL DEFAULT false", "INTEGER NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT false"),
+        ("gov_2fa_otp", "VARCHAR(10) NULL", "VARCHAR(10) NULL", "VARCHAR(10) NULL"),
+        ("gov_2fa_otp_expiry", "TIMESTAMP WITHOUT TIME ZONE NULL", "DATETIME NULL", "TIMESTAMP NULL"),
         ("gov_onboarding_complete", "BOOLEAN NOT NULL DEFAULT false", "INTEGER NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT false"),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _user_column_ddls:
@@ -389,15 +396,48 @@ def ensure_payment_checkout_table() -> None:
         logger.warning("ensure_payment_checkout_table: %s", exc)
 
 
-def run_all_migrations() -> None:
-    """Create tables and apply incremental column / government migrations."""
-    init_tables()
+def run_incremental_migrations() -> None:
+    """ALTER existing DBs — safe to run repeatedly."""
     ensure_users_column_migrations()
     ensure_tenants_column_migrations()
     ensure_payments_column_migrations()
     ensure_payment_checkout_table()
     ensure_government_schema_migrations()
     ensure_government_invitation_tables()
+
+
+def run_startup_migrations() -> None:
+    """
+    Lightweight boot migrations for uvicorn (no full init_tables).
+    Skipped when SKIP_STARTUP_MIGRATIONS=true or stamp file matches version.
+    """
+    from app.config import settings
+
+    if settings.skip_startup_migrations:
+        logger.info("Startup migrations skipped (SKIP_STARTUP_MIGRATIONS).")
+        return
+
+    try:
+        if _STARTUP_STAMP_FILE.exists():
+            if _STARTUP_STAMP_FILE.read_text(encoding="utf-8").strip() == _STARTUP_STAMP_VERSION:
+                logger.info("Startup migrations skipped (stamp %s).", _STARTUP_STAMP_VERSION)
+                return
+    except OSError as exc:
+        logger.warning("Could not read migration stamp: %s", exc)
+
+    logger.info("Running startup migrations…")
+    run_incremental_migrations()
+    try:
+        _STARTUP_STAMP_FILE.write_text(_STARTUP_STAMP_VERSION, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write migration stamp: %s", exc)
+    logger.info("Startup migrations complete.")
+
+
+def run_all_migrations() -> None:
+    """Create tables and apply incremental column / government migrations."""
+    init_tables()
+    run_incremental_migrations()
 
 
 def reset_database() -> None:

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models.user import UserRole
 
@@ -27,4 +27,12 @@ class GovernmentLoginBody(BaseModel):
 
 
 class GovernmentTwoFaBody(BaseModel):
-    code: str = Field(min_length=6, max_length=8)
+    code: str = Field(min_length=1, max_length=16)
+
+    @field_validator("code", mode="before")
+    @classmethod
+    def normalize_code(cls, v: object) -> str:
+        digits = "".join(c for c in str(v or "") if c.isdigit())
+        if len(digits) < 6:
+            raise ValueError("Enter the 6-digit code from your email.")
+        return digits[:6]

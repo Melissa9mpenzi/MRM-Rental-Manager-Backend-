@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -5,6 +6,8 @@ from typing import List
 class Settings(BaseSettings):
     # Environment
     environment: str = "development"
+    # Skip DB migration checks on API boot (faster reload; run python -m app.utils.init_db when schema changes)
+    skip_startup_migrations: bool = False
 
     # Database — Neon / Postgres (set DATABASE_URL in .env)
     # Example: postgresql+psycopg2://USER:PASSWORD@ep-xxx.region.aws.neon.tech/neondb?sslmode=require
@@ -20,8 +23,13 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 30
 
-    # CORS
-    allowed_origins: List[str] = ["http://localhost:5173", "http://localhost:5174"]
+    # CORS — comma-separated in .env, e.g. ALLOWED_ORIGINS=https://app.vercel.app,https://mobile.vercel.app
+    allowed_origins: List[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "https://mrm-rental-manager-frontend-pink.vercel.app",
+        "https://mrm-rental-manager-mobile.vercel.app",
+    ]
 
     # Auth email-link redirects + SPA (must match Vite dev server or production URL)
     frontend_base_url: str = "http://localhost:5173"
@@ -77,6 +85,13 @@ class Settings(BaseSettings):
     email_product_tagline: str = "Property rentals · Uganda"
     email_brand_logo_url: str = ""
     email_support_email: str = ""
+
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, value):
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
 
     class Config:
         env_file = ".env"
