@@ -96,7 +96,13 @@ _local_vite = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
 ]
-_cors_origins = list(dict.fromkeys(_local_vite + list(settings.allowed_origins)))
+_production_spa_origins = [
+    "https://mrm-rental-manager-frontend-pink.vercel.app",
+    "https://mrm-rental-manager-mobile.vercel.app",
+]
+_cors_origins = list(
+    dict.fromkeys(_local_vite + _production_spa_origins + list(settings.allowed_origins))
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
@@ -137,6 +143,8 @@ def root():
         "health": "/health",
         "docs": "/docs",
         "api": API,
+        "frontend": "https://mrm-rental-manager-frontend-pink.vercel.app",
+        "mobile_web": "https://mrm-rental-manager-mobile.vercel.app",
     }
 
 

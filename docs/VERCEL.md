@@ -9,9 +9,9 @@ Set these in the Vercel project **Settings → Environment Variables**:
 | `DATABASE_URL` | `postgresql+psycopg2://user:pass@host/neondb?sslmode=require` |
 | `SECRET_KEY` | long random string |
 | `ENVIRONMENT` | `production` |
-| `ALLOWED_ORIGINS` | `https://mrm-rental-manager-frontend-pink.vercel.app` |
-| `FRONTEND_BASE_URL` | same as your SPA URL |
-| `API_PUBLIC_BASE_URL` | `https://your-backend.vercel.app` |
+| `ALLOWED_ORIGINS` | `https://mrm-rental-manager-frontend-pink.vercel.app,https://mrm-rental-manager-mobile.vercel.app` |
+| `FRONTEND_BASE_URL` | `https://mrm-rental-manager-frontend-pink.vercel.app` |
+| `API_PUBLIC_BASE_URL` | `https://mrm-rental-manager-backend.vercel.app` |
 | `SKIP_STARTUP_MIGRATIONS` | `true` (run `python -m app.utils.init_db` locally against Neon once) |
 
 Use the **`postgresql+psycopg2://`** prefix (not plain `postgresql://`) so SQLAlchemy uses the installed driver.
