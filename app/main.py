@@ -127,6 +127,19 @@ app.include_router(government.router,  prefix=API)
 app.include_router(government_auth.router, prefix=API)
 
 
+@app.get("/", tags=["Health"])
+def root():
+    """Landing for deploy previews and uptime checks (Vercel opens `/` by default)."""
+    return {
+        "service": "RentalMGR API",
+        "status": "ok",
+        "version": "1.0.0",
+        "health": "/health",
+        "docs": "/docs",
+        "api": API,
+    }
+
+
 @app.get("/health", tags=["Health"])
 def health():
     return {"status": "ok", "version": "1.0.0"}
