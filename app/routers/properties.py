@@ -70,7 +70,9 @@ async def upload_property_photo(
         raise HTTPException(status_code=400, detail="Only JPEG, PNG or WebP images allowed.")
     ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "jpg"
     filename = f"{uuid.uuid4().hex}.{ext}"
-    save_dir = os.path.join(settings.upload_dir, "properties")
+    from app.runtime import upload_root
+
+    save_dir = os.path.join(upload_root(), "properties")
     os.makedirs(save_dir, exist_ok=True)
     with open(os.path.join(save_dir, filename), "wb") as buf:
         shutil.copyfileobj(file.file, buf)

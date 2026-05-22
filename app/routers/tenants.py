@@ -64,7 +64,9 @@ async def create_tenant(
     """Create tenant with standardized response"""
     deposit_receipt_path = None
     if deposit_receipt and deposit_receipt.filename:
-        dest = os.path.join(settings.upload_dir, "tenants")
+        from app.runtime import upload_root
+
+        dest = os.path.join(upload_root(), "tenants")
         os.makedirs(dest, exist_ok=True)
         ext = os.path.splitext(deposit_receipt.filename)[1]
         fname = f"{uuid.uuid4().hex}{ext}"

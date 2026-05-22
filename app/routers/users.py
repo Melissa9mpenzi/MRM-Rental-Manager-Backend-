@@ -86,7 +86,9 @@ async def upload_kyc_documents(
             jpeg_data = normalize_kyc_image_jpeg(raw, kind)  # type: ignore[arg-type]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"{kind}: {exc.args[0]}") from exc
-        out_dir = kyc_user_dir(settings.upload_dir, current_user.id)
+        from app.runtime import upload_root
+
+        out_dir = kyc_user_dir(upload_root(), current_user.id)
         out_dir.mkdir(parents=True, exist_ok=True)
         for old in out_dir.glob(f"{kind}.*"):
             try:
@@ -103,7 +105,7 @@ def kyc_submit(
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role in (UserRole.landlord, UserRole.staff):
-        if not kyc_documents_complete(settings.upload_dir, current_user.id):
+        if not kyc_documents_complete(upload_root(), current_user.id):
             raise HTTPException(
                 status_code=400,
                 detail=(

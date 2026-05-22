@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 import os
 
 from app.config import settings
+from app.runtime import is_serverless, upload_root
 from app.routers import (
     auth,
     properties,
@@ -28,9 +29,10 @@ from app.routers import (
     government_auth,
 )
 
-# Ensure upload subdirectories exist
+# Writable upload root (Vercel/Lambda only allow /tmp; project dir is read-only).
+UPLOAD_ROOT = upload_root()
 for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance", "kyc"]:
-    os.makedirs(os.path.join(settings.upload_dir, sub), exist_ok=True)
+    os.makedirs(os.path.join(UPLOAD_ROOT, sub), exist_ok=True)
 
 
 @asynccontextmanager
@@ -40,13 +42,15 @@ async def lifespan(app: FastAPI):
 
     log = logging.getLogger("uvicorn.error")
 
-    async def _background_migrations() -> None:
-        try:
-            await asyncio.to_thread(run_startup_migrations)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Background startup migrations failed: %s", exc)
+    migration_task = None
+    if not is_serverless() and not settings.skip_startup_migrations:
+        async def _background_migrations() -> None:
+            try:
+                await asyncio.to_thread(run_startup_migrations)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Background startup migrations failed: %s", exc)
 
-    migration_task = asyncio.create_task(_background_migrations())
+        migration_task = asyncio.create_task(_background_migrations())
 
     gw = gateway_public_status()
     if settings.environment == "production" and not is_gateway_configured():
@@ -65,21 +69,25 @@ async def lifespan(app: FastAPI):
     # Accept HTTP immediately; migrations run in background (avoids reload timeouts).
     yield
 
-    migration_task.cancel()
-    try:
-        await migration_task
-    except asyncio.CancelledError:
-        pass
+    if migration_task is not None:
+        migration_task.cancel()
+        try:
+            await migration_task
+        except asyncio.CancelledError:
+            pass
 
 
-app = FastAPI(
-    title="RentalMGR API",
-    version="1.0.0",
-    description="MRM Rental Manager — Property, Tenant & Payment Management API",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan,
-)
+_app_kwargs: dict = {
+    "title": "RentalMGR API",
+    "version": "1.0.0",
+    "description": "MRM Rental Manager — Property, Tenant & Payment Management API",
+    "docs_url": "/docs",
+    "redoc_url": "/redoc",
+}
+if not is_serverless():
+    _app_kwargs["lifespan"] = lifespan
+
+app = FastAPI(**_app_kwargs)
 
 # CORS — explicit origins (merge so a narrow .env ALLOWED_ORIGINS never drops common Vite ports)
 _local_vite = [
@@ -97,7 +105,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/uploads", StaticFiles(directory=settings.upload_dir), name="uploads")
+app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 API = "/api/v1"
 app.include_router(auth.router,         prefix=API)

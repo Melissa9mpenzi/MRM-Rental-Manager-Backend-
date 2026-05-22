@@ -1,8 +1,10 @@
 import re
 from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.config import settings
+from app.runtime import is_serverless
 
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -35,13 +37,18 @@ if "postgresql" in settings.database_url.lower():
     # Neon / remote Postgres: slow or flaky networks need more than the default timeout.
     _connect_args["connect_timeout"] = 60
 
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-    echo=settings.environment == "development",
-    connect_args=_connect_args,
-)
+_engine_kwargs: dict = {
+    "pool_pre_ping": True,
+    "echo": settings.environment == "development",
+    "connect_args": _connect_args,
+}
+# Serverless: one connection per invocation — avoid pooled connections across frozen containers.
+if is_serverless():
+    _engine_kwargs["poolclass"] = NullPool
+else:
+    _engine_kwargs["pool_recycle"] = 3600
+
+engine = create_engine(settings.database_url, **_engine_kwargs)
 
 if postgres_table_schema:
 
