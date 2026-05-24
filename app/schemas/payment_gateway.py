@@ -5,7 +5,7 @@ from decimal import Decimal
 
 class InitiateCheckoutBody(BaseModel):
     invoice_id: int
-    payment_method: str = Field(..., description="mtn_momo | airtel | bank | other (card)")
+    payment_method: str = Field(..., description="mtn_momo | airtel | sui | bank | other (card)")
     phone: Optional[str] = Field(None, description="256… required for MoMo")
     amount: Optional[Decimal] = Field(None, gt=0, description="Defaults to invoice balance_due")
 
@@ -15,6 +15,7 @@ class CheckoutNextAction(BaseModel):
     message: Optional[str] = None
     payment_link: Optional[str] = None
     simulate_url: Optional[str] = None
+    sui_payload: Optional[dict] = None
 
 
 class CheckoutOut(BaseModel):

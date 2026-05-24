@@ -155,6 +155,16 @@ def record_payment(db: Session, data: PaymentCreate, owner_id: int) -> dict:
     db.commit()
     db.expire(payment)
 
+    try:
+        from app.runtime import upload_root
+        from app.services import receipt_service
+
+        p_loaded = _load(db, payment.id, owner_id)
+        receipt_service.issue_from_payment(db, p_loaded, upload_dir=upload_root())
+        db.commit()
+    except Exception:
+        db.rollback()
+
     # Notification
     try:
         from app.models.notification import Notification, NotifType

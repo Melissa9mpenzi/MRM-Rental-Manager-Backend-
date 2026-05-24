@@ -266,3 +266,47 @@ def html_government_invitation(
         headline="Government portal invitation",
         body_html=body,
     )
+
+
+def html_payment_receipt(
+    *,
+    receipt_number: str,
+    amount_ugx: float,
+    period: str,
+    property_name: str,
+    verify_url: str,
+) -> str:
+    amt = f"UGX {amount_ugx:,.0f}"
+    body = f"""
+    <p style="margin:0 0 16px 0;font-size:15px;color:{_COLOR_TEXT};">
+      Your payment receipt is ready. This document serves as legal proof of rent payment in Uganda.
+    </p>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+           style="background:#f4faf7;border-radius:12px;border:1px solid {_COLOR_BORDER};">
+      <tr>
+        <td style="padding:20px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+          <span style="display:block;font-size:11px;color:{_COLOR_MUTED};text-transform:uppercase;letter-spacing:0.08em;">Receipt</span>
+          <div style="font-size:18px;font-weight:700;color:{_COLOR_TEXT};margin:6px 0;">{_escape(receipt_number)}</div>
+          <div style="font-size:22px;font-weight:800;color:{_COLOR_ACCENT};margin:8px 0;">{amt}</div>
+          <div style="font-size:13px;color:{_COLOR_MUTED};">{_escape(period)} · {_escape(property_name or 'Property')}</div>
+        </td>
+      </tr>
+    </table>
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+      <tr>
+        <td align="center" style="padding:24px 0 8px 0;">
+          <a href="{_escape(verify_url)}" style="display:inline-block;padding:14px 28px;background:{_COLOR_ACCENT};color:#ffffff;font-weight:700;text-decoration:none;border-radius:10px;">
+            Verify receipt online
+          </a>
+        </td>
+      </tr>
+    </table>
+    <p style="margin:0;text-align:center;font-size:12px;color:{_COLOR_MUTED};">
+      Scan the QR code on your PDF receipt or use the link above. Blockchain-anchored payments include on-chain proof.
+    </p>
+    """
+    return wrap_email(
+        preheader=f"Receipt {receipt_number} — {amt}",
+        headline="Payment receipt issued",
+        body_html=body,
+    )

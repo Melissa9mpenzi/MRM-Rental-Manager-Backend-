@@ -27,11 +27,13 @@ from app.routers import (
     messages,
     government,
     government_auth,
+    blockchain,
+    receipts,
 )
 
 # Writable upload root (Vercel/Lambda only allow /tmp; project dir is read-only).
 UPLOAD_ROOT = upload_root()
-for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance", "kyc"]:
+for sub in ["properties", "tenants", "receipts", "receipts/proofs", "receipts/enterprise", "maintenance", "kyc"]:
     os.makedirs(os.path.join(UPLOAD_ROOT, sub), exist_ok=True)
 
 
@@ -131,6 +133,8 @@ app.include_router(saved_units.router, prefix=API)
 app.include_router(messages.router,    prefix=API)
 app.include_router(government.router,  prefix=API)
 app.include_router(government_auth.router, prefix=API)
+app.include_router(blockchain.router,     prefix=API)
+app.include_router(receipts.router,         prefix=API)
 
 
 @app.get("/", tags=["Health"])

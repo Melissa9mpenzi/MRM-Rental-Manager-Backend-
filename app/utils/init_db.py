@@ -45,13 +45,15 @@ from app.models import (  # noqa: F401
     SavedUnit,
     MessageThread,
     ThreadParticipant,
-    Message,
+    BlockchainWallet,
+    BlockchainReceipt,
+    EscrowHold,
 )
 
 logger = logging.getLogger(__name__)
 
 # Bump when startup migration steps change; local stamp skips slow Neon round-trips on reload.
-_STARTUP_STAMP_VERSION = "v10-gov-2fa-otp"
+_STARTUP_STAMP_VERSION = "v12-enterprise-receipts"
 _STARTUP_STAMP_FILE = Path(__file__).resolve().parent.parent.parent / ".startup_migrations.stamp"
 
 
@@ -396,12 +398,33 @@ def ensure_payment_checkout_table() -> None:
         logger.warning("ensure_payment_checkout_table: %s", exc)
 
 
+def ensure_blockchain_tables() -> None:
+    """Create blockchain_wallets, blockchain_receipts, escrow_holds."""
+    for model in (BlockchainWallet, BlockchainReceipt, EscrowHold):
+        try:
+            model.__table__.create(bind=engine, checkfirst=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ensure_blockchain_tables (%s): %s", model.__tablename__, exc)
+
+
+def ensure_receipt_tables() -> None:
+    from app.models.system_receipt import SystemReceipt
+
+    try:
+        SystemReceipt.__table__.create(bind=engine, checkfirst=True)
+        logger.info("Ensured system_receipts table")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_receipt_tables: %s", exc)
+
+
 def run_incremental_migrations() -> None:
     """ALTER existing DBs — safe to run repeatedly."""
     ensure_users_column_migrations()
     ensure_tenants_column_migrations()
     ensure_payments_column_migrations()
     ensure_payment_checkout_table()
+    ensure_blockchain_tables()
+    ensure_receipt_tables()
     ensure_government_schema_migrations()
     ensure_government_invitation_tables()
 

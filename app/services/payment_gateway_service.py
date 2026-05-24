@@ -25,10 +25,11 @@ from app.services.gateway.config import (
 from app.services.gateway.flutterwave_provider import FlutterwaveGatewayProvider
 from app.services.gateway.mtn_momo_provider import MtnMomoGatewayProvider
 from app.services.gateway.pesapal_provider import PesapalGatewayProvider
+from app.services.gateway.sui_provider import SuiGatewayProvider
+from app.services.blockchain import blockchain_service, sui_rpc
 from app.utils.response import error_response
 
-
-MOMO_METHODS = {"mtn_momo", "airtel", "mobile_money"}
+MOMO_METHODS = ("mtn_momo", "mtn", "mobile_money", "airtel")
 
 
 def _normalize_phone(raw: Optional[str]) -> Optional[str]:
@@ -45,6 +46,16 @@ def _normalize_phone(raw: Optional[str]) -> Optional[str]:
 
 
 def _checkout_out(checkout: PaymentCheckout, next_action: CheckoutNextAction) -> dict:
+    raw_sui = None
+    if next_action.type == "sui_sign" and checkout.provider_payload:
+        try:
+            payload = json.loads(checkout.provider_payload)
+            raw_sui = payload.get("raw") or payload
+        except json.JSONDecodeError:
+            raw_sui = None
+    if raw_sui and not next_action.sui_payload:
+        next_action.sui_payload = raw_sui if isinstance(raw_sui, dict) else None
+
     return CheckoutOut(
         reference=checkout.reference,
         status=checkout.status.value,
@@ -94,8 +105,18 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
     if method in MOMO_METHODS and not phone:
         raise error_response("Phone number is required for Mobile Money (256…).", status_code=400)
 
-    assert_live_gateway_ready()
-    gw_name = active_provider_name()
+    use_sui = method in ("sui", "crypto", "blockchain")
+
+    if use_sui:
+        if not blockchain_service.is_sui_configured():
+            raise error_response(
+                "Sui wallet payments are not configured. Set SUI_TREASURY_ADDRESS in API .env.",
+                status_code=503,
+            )
+    else:
+        assert_live_gateway_ready()
+
+    gw_name = "sui" if use_sui else active_provider_name()
 
     if gw_name == "mtn_momo" and method == "airtel":
         raise error_response(
@@ -107,7 +128,7 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
         raise error_response("This server uses MTN MoMo API for MTN only. Use Pesapal for Airtel/card.", status_code=400)
 
     reference = f"rd_{uuid.uuid4().hex[:24]}"
-    provider = get_gateway_provider()
+    provider = SuiGatewayProvider() if use_sui else get_gateway_provider()
     redirect_url = (
         f"{settings.frontend_base_url.rstrip('/')}/tenant/pay?checkout={reference}&status=return"
     )
@@ -165,6 +186,7 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
         message=init.message,
         payment_link=init.payment_link,
         simulate_url=None,
+        sui_payload=init.raw if init.next_action_type == "sui_sign" else None,
     )
     db.commit()
     db.refresh(checkout)
@@ -196,6 +218,8 @@ def try_settle_from_provider(db: Session, checkout: PaymentCheckout) -> Optional
         status, tx_id, raw = PesapalGatewayProvider().verify_by_merchant_reference(
             checkout.provider_tx_id or checkout.reference
         )
+    elif checkout.provider == "sui" and checkout.provider_tx_id:
+        return checkout
     elif checkout.provider == "flutterwave":
         status, tx_id, raw = FlutterwaveGatewayProvider().verify_by_reference(checkout.reference)
     else:
@@ -273,6 +297,8 @@ def complete_checkout(
         raise error_response("Invoice not found.", status_code=404)
 
     api_method = checkout.payment_method
+    if api_method in ("sui", "crypto", "blockchain"):
+        api_method = "sui"
     if api_method == "other" and checkout.provider == "flutterwave":
         api_method = "other"
 
@@ -293,7 +319,103 @@ def complete_checkout(
         checkout.provider_payload = json.dumps(provider_payload)[:8000]
     db.commit()
     db.refresh(checkout)
+
+    if settings.sui_anchor_fiat_receipts and blockchain_service.is_sui_configured() and payment:
+        try:
+            tx_digest = None
+            if checkout.provider == "sui" and checkout.provider_tx_id:
+                tx_digest = checkout.provider_tx_id
+            blockchain_service.anchor_payment_receipt(
+                db, payment=payment, checkout=checkout, tx_digest=tx_digest
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    try:
+        from app.models.blockchain_receipt import BlockchainReceipt
+        from app.runtime import upload_root
+        from app.services import receipt_service
+
+        bc = (
+            db.query(BlockchainReceipt)
+            .filter(BlockchainReceipt.payment_id == payment.id)
+            .order_by(BlockchainReceipt.id.desc())
+            .first()
+        )
+        wallet = None
+        if checkout.provider == "sui" and checkout.provider_payload:
+            try:
+                pl = json.loads(checkout.provider_payload or "{}")
+                wallet = pl.get("wallet_address") or pl.get("sender")
+            except json.JSONDecodeError:
+                pass
+        receipt_service.issue_from_payment(
+            db,
+            payment,
+            invoice=invoice,
+            blockchain_receipt=bc,
+            wallet_address=wallet,
+            upload_dir=upload_root(),
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    db.refresh(checkout)
     return checkout
+
+
+def confirm_sui_checkout(
+    db: Session,
+    user: User,
+    reference: str,
+    *,
+    tx_digest: str,
+    wallet_address: Optional[str] = None,
+) -> dict:
+    """Verify on-chain SUI transfer and settle invoice."""
+    checkout = db.query(PaymentCheckout).filter(PaymentCheckout.reference == reference).first()
+    if not checkout:
+        raise error_response("Checkout not found.", status_code=404)
+    if checkout.provider != "sui":
+        raise error_response("Not a Sui checkout.", status_code=400)
+    if checkout.status == CheckoutStatus.completed:
+        return get_checkout(db, user, reference)
+
+    tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
+    if not tenant or checkout.tenant_id != tenant.id:
+        raise error_response("Access denied.", status_code=403)
+
+    try:
+        payload = json.loads(checkout.provider_payload or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    init_raw = payload if isinstance(payload, dict) else {}
+    if "amount_mist" not in init_raw and "raw" in init_raw:
+        init_raw = init_raw.get("raw") or {}
+
+    amount_mist = int(init_raw.get("amount_mist") or sui_rpc.ugx_to_mist(Decimal(str(checkout.amount))))
+    treasury = (init_raw.get("treasury_address") or settings.sui_treasury_address or "").strip()
+
+    try:
+        sui_rpc.verify_sui_transfer(
+            tx_digest,
+            recipient=treasury,
+            min_amount_mist=amount_mist,
+            sender=(wallet_address or "").strip() or None,
+        )
+    except ValueError as exc:
+        raise error_response(str(exc), status_code=400) from exc
+    except Exception as exc:
+        raise error_response(f"Sui verification failed: {exc}", status_code=502) from exc
+
+    if wallet_address:
+        blockchain_service.link_wallet(db, user, wallet_address)
+
+    checkout.provider_tx_id = tx_digest
+    complete_checkout(db, reference, provider_tx_id=tx_digest, provider_payload={"sui_tx": tx_digest})
+    return get_checkout(db, user, reference)
 
 
 def handle_provider_webhook(

@@ -80,6 +80,19 @@ class Settings(BaseSettings):
     flutterwave_secret_key: str = ""
     flutterwave_public_key: str = ""
 
+    # Sui blockchain — hybrid Web3 (does not replace MoMo/Pesapal)
+    sui_network: str = "devnet"
+    sui_rpc_url: str = ""
+    sui_treasury_address: str = ""
+    sui_package_id: str = ""
+    sui_escrow_module: str = "escrow"
+    sui_ugx_per_sui: float = 6_000_000
+    sui_anchor_fiat_receipts: bool = True
+
+    # Walrus decentralized storage
+    walrus_publisher_url: str = ""
+    walrus_aggregator_url: str = ""
+
     # Transactional email branding (optional logo: public HTTPS URL, e.g. CDN or your SPA /logo.png)
     email_brand_name: str = "RentDirect UG"
     email_product_tagline: str = "Property rentals · Uganda"
