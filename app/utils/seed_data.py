@@ -175,7 +175,14 @@ def create_users(db: Session):
             "phone": "+256 700 444 444",
             "role": UserRole.landlord,
             "password": "pass12"
-        }
+        },
+        {
+            "email": "tenant.demo@rentdirect.ug",
+            "full_name": "Amina Nakato",
+            "phone": "+256 700 555 555",
+            "role": UserRole.tenant,
+            "password": "tenant12"
+        },
     ]
     
     for data in user_data:
@@ -275,7 +282,8 @@ def create_properties(db: Session, users):
             district=data["district"],
             description=data["description"],
             owner_id=landlords[data["owner_idx"]].id,
-            is_active=True
+            is_active=True,
+            gov_verification_status="verified",
         )
         db.add(prop)
         db.flush()

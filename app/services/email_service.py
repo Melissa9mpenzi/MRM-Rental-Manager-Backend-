@@ -31,9 +31,14 @@ def generate_verification_token(length: int = 32) -> str:
     return secrets.token_urlsafe(length)
 
 
+def smtp_is_configured() -> bool:
+    """True when minimum SMTP settings are present (host + from address)."""
+    return bool((settings.smtp_host or "").strip() and (settings.smtp_from or "").strip())
+
+
 def send_email(to_email: str, subject: str, html_body: str) -> bool:
     """Send email via SMTP. Returns True if the message was handed off to the server."""
-    if not settings.smtp_from or not settings.smtp_host:
+    if not smtp_is_configured():
         print("[EMAIL ERROR] SMTP_FROM or SMTP_HOST is not configured.")
         return False
 

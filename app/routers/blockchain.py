@@ -7,7 +7,7 @@ from app.dependencies import get_current_user, require_tenant
 from app.models.user import User
 from app.schemas.blockchain import ConfirmSuiTxBody, LinkWalletBody, ReleaseEscrowBody
 from app.services import payment_gateway_service
-from app.services.blockchain import blockchain_service
+from app.services.blockchain import blockchain_service, walrus_anchor_service
 from app.services.gateway.config import gateway_public_status
 from app.utils.response import success_response
 
@@ -29,14 +29,21 @@ def get_receipt(
 
 
 @router.get("/blockchain/status")
-def blockchain_status():
+def blockchain_status(db: Session = Depends(get_db)):
     """Public Sui/Walrus configuration for wallet connect UI."""
     return success_response(
         data={
             **blockchain_service.blockchain_public_status(),
             "fiat_gateway": gateway_public_status(),
+            "walrus_inventory": walrus_anchor_service.walrus_inventory(db),
         }
     )
+
+
+@router.get("/blockchain/walrus/inventory")
+def walrus_inventory(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Counts of Walrus-anchored artifacts (KYC, property, audit, receipts, escrow)."""
+    return success_response(data=walrus_anchor_service.walrus_inventory(db))
 
 
 @router.get("/blockchain/wallet/me")

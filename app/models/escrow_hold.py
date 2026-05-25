@@ -36,6 +36,7 @@ class EscrowHold(Base):
     tenant_sui_address = Column(String(80), nullable=True)
     landlord_sui_address = Column(String(80), nullable=True)
     walrus_lease_blob_id = Column(String(256), nullable=True)
+    walrus_release_blob_id = Column(String(256), nullable=True)
     notes = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=func.now(), server_default=func.now())

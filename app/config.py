@@ -5,6 +5,8 @@ from typing import List
 _DEFAULT_CORS_CSV = (
     "http://localhost:5173,"
     "http://localhost:5174,"
+    "http://127.0.0.1:5173,"
+    "http://127.0.0.1:5174,"
     "https://mrm-rental-manager-frontend-pink.vercel.app,"
     "https://mrm-rental-manager-mobile.vercel.app"
 )
@@ -105,7 +107,7 @@ class Settings(BaseSettings):
     flutterwave_public_key: str = ""
 
     # Sui blockchain — hybrid Web3 (does not replace MoMo/Pesapal)
-    sui_network: str = "devnet"
+    sui_network: str = "testnet"
     sui_rpc_url: str = ""
     sui_treasury_address: str = ""
     sui_package_id: str = ""

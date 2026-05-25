@@ -60,6 +60,8 @@ class User(Base):
     email_verified  = Column(Boolean, default=False)
     kyc_submitted_at = Column(DateTime, nullable=True)
     kyc_review_status = Column(String(20), nullable=False, default="none")
+    kyc_walrus_blob_id = Column(String(256), nullable=True)
+    kyc_manifest_hash = Column(String(64), nullable=True)
     trusted_for_commerce = Column(Boolean, nullable=False, default=False)
     firebase_uid = Column(String(128), nullable=True, unique=True, index=True)
 
@@ -80,6 +82,10 @@ class User(Base):
     gov_2fa_otp = Column(String(10), nullable=True)
     gov_2fa_otp_expiry = Column(DateTime, nullable=True)
     gov_onboarding_complete = Column(Boolean, nullable=False, default=False)
+    # NIRA compliance — suspend fraudsters / fake accounts (officers cannot be blacklisted via API)
+    gov_suspended = Column(Boolean, nullable=False, default=False)
+    gov_suspension_reason = Column(String(500), nullable=True)
+    gov_suspended_at = Column(DateTime, nullable=True)
 
     last_login      = Column(DateTime, nullable=True)
     created_at      = Column(DateTime, server_default=func.now())
@@ -87,4 +93,4 @@ class User(Base):
 
     def __repr__(self):
         return f"<User id={self.id} email={self.email} role={self.role}>"
-
+

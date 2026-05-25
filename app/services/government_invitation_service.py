@@ -19,6 +19,7 @@ from app.services.email_service import (
     generate_verification_token,
     send_government_2fa_otp,
     send_government_invitation_email,
+    smtp_is_configured,
 )
 
 AGENCY_ROLE_MAP = {
@@ -78,6 +79,22 @@ def _government_portal_url(path_suffix: str = "/login") -> str:
         root = portal.rsplit("/", 1)[0] if "/login" in portal else portal
         return f"{root}{path_suffix}"
     return f"{base}{portal.replace('/login', '')}{path_suffix}"
+
+
+def invite_url_for(inv: GovernmentInvitation) -> str:
+    return f"{_government_portal_url('/accept-invite')}?token={inv.token}"
+
+
+def _send_invitation_email(inv: GovernmentInvitation) -> bool:
+    role = inv.role.value if hasattr(inv.role, "value") else str(inv.role)
+    return send_government_invitation_email(
+        inv.email,
+        full_name=inv.full_name,
+        agency=(inv.agency or "").upper(),
+        role_label=role.replace("gov_", "").upper(),
+        invite_url=invite_url_for(inv),
+        work_id=inv.work_id,
+    )
 
 
 def _role_for_agency(agency: str, role: UserRole) -> UserRole:
@@ -169,15 +186,8 @@ def create_invitation(
     db.commit()
     db.refresh(inv)
 
-    invite_url = f"{_government_portal_url('/accept-invite')}?token={token}"
-    email_sent = send_government_invitation_email(
-        email,
-        full_name=inv.full_name,
-        agency=agency.upper(),
-        role_label=role.value.replace("gov_", "").upper(),
-        invite_url=invite_url,
-        work_id=work_id,
-    )
+    invite_url = invite_url_for(inv)
+    email_sent = _send_invitation_email(inv)
     if not email_sent:
         print(
             f"\n[WARN] Government invitation email was NOT sent to {email!r}.\n"
@@ -206,28 +216,78 @@ def create_invitation(
     return inv, meta
 
 
-def list_invitations(db: Session, *, limit: int = 50) -> list[dict[str, Any]]:
+def list_invitations(db: Session, *, limit: int = 50) -> dict[str, Any]:
     rows = (
         db.query(GovernmentInvitation)
         .order_by(GovernmentInvitation.created_at.desc())
         .limit(limit)
         .all()
     )
-    return [
-        {
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        status = r.status.value if hasattr(r.status, "value") else str(r.status)
+        row: dict[str, Any] = {
             "id": r.id,
             "email": r.email,
             "full_name": r.full_name,
             "agency": r.agency,
             "role": r.role.value if hasattr(r.role, "value") else str(r.role),
             "work_id": r.work_id,
-            "status": r.status.value if hasattr(r.status, "value") else str(r.status),
+            "status": status,
             "expires_at": r.expires_at.isoformat() if r.expires_at else None,
             "accepted_at": r.accepted_at.isoformat() if r.accepted_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
-        for r in rows
-    ]
+        if status == InvitationStatus.pending.value:
+            row["invite_url"] = invite_url_for(r)
+            row["can_resend"] = True
+        items.append(row)
+    return {
+        "smtp_configured": smtp_is_configured(),
+        "frontend_base_url": settings.frontend_base_url,
+        "items": items,
+    }
+
+
+def resend_invitation_email(
+    db: Session,
+    *,
+    invitation_id: int,
+    inviter: User,
+) -> tuple[GovernmentInvitation, dict[str, Any]]:
+    inv = db.get(GovernmentInvitation, invitation_id)
+    if not inv:
+        raise ValueError("Invitation not found.")
+    if inv.status != InvitationStatus.pending:
+        raise ValueError("Only pending invitations can be resent.")
+    now = datetime.now(timezone.utc)
+    exp = inv.expires_at
+    if exp and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if inv.status == InvitationStatus.expired or (exp and now > exp):
+        inv.status = InvitationStatus.expired
+        db.commit()
+        raise ValueError("This invitation has expired. Create a new invitation for this officer.")
+    invite_url = invite_url_for(inv)
+    email_sent = _send_invitation_email(inv)
+    if not email_sent:
+        print(
+            f"\n[WARN] Government invitation resend email was NOT sent to {inv.email!r}.\n"
+            f"       Configure SMTP in .env (SMTP_HOST, SMTP_USER, SMTP_PASSWORD, SMTP_FROM).\n"
+            f"       Invite link: {invite_url}\n"
+        )
+    log_action(
+        db,
+        user_id=inviter.id,
+        action="gov_invitation_resent",
+        table_name="government_invitations",
+        record_id=inv.id,
+        new_value={"email": inv.email, "email_sent": email_sent},
+    )
+    meta: dict[str, Any] = {"email_sent": email_sent, "invite_url": invite_url}
+    if settings.environment == "development" and not email_sent:
+        meta["dev_invite_token"] = inv.token
+    return inv, meta
 
 
 def verify_invitation_token(db: Session, token: str) -> dict[str, Any]:

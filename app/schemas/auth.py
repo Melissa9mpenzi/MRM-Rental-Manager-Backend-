@@ -86,6 +86,8 @@ class UserOut(BaseModel):
     email_verified: bool
     kyc_submitted_at: Optional[datetime] = None
     kyc_review_status: str = "none"
+    kyc_walrus_blob_id: Optional[str] = None
+    kyc_manifest_hash: Optional[str] = None
     trusted_for_commerce: bool = False
     firebase_uid: Optional[str] = None
     created_at: Optional[datetime] = None

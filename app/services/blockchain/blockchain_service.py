@@ -18,7 +18,7 @@ from app.models.payment import Payment
 from app.models.payment_checkout import PaymentCheckout
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services.blockchain import sui_rpc, walrus_service
+from app.services.blockchain import sui_rpc, walrus_anchor_service, walrus_service
 from app.utils.response import error_response
 
 
@@ -40,7 +40,11 @@ def blockchain_public_status() -> dict[str, Any]:
             "wallet_payments": is_sui_configured(),
             "receipt_anchoring": is_sui_configured(),
             "escrow": bool((settings.sui_package_id or "").strip()),
-            "walrus_storage": walrus_service.is_walrus_configured(),
+            "walrus_storage": True,
+            "walrus_publisher_live": walrus_service.is_walrus_configured(),
+            "kyc_manifests": True,
+            "property_packets": True,
+            "gov_audit_blobs": True,
         },
     }
 
@@ -179,6 +183,8 @@ def create_escrow_for_lease(db: Session, user: User, lease_id: int) -> EscrowHol
         status=EscrowStatus.pending,
     )
     db.add(hold)
+    db.flush()
+    walrus_anchor_service.anchor_escrow_lease(db, hold, lease)
     db.commit()
     db.refresh(hold)
     return hold
@@ -196,6 +202,7 @@ def release_escrow(db: Session, user: User, escrow_id: int, release_tx_digest: O
     hold.status = EscrowStatus.released
     hold.release_tx_digest = release_tx_digest
     hold.released_at = datetime.now(timezone.utc)
+    walrus_anchor_service.anchor_escrow_release(db, hold, release_tx_digest=release_tx_digest)
     db.commit()
     db.refresh(hold)
     return hold
@@ -396,6 +403,10 @@ def get_receipt(db: Session, user: User, receipt_id: int) -> dict:
 
 
 def _escrow_out(h: EscrowHold) -> dict:
+    lease_proof = walrus_anchor_service.proof_fields(h.walrus_lease_blob_id)
+    release_proof = walrus_anchor_service.proof_fields(
+        getattr(h, "walrus_release_blob_id", None)
+    )
     return {
         "id": h.id,
         "lease_id": h.lease_id,
@@ -407,6 +418,10 @@ def _escrow_out(h: EscrowHold) -> dict:
         "release_tx_digest": h.release_tx_digest,
         "tenant_sui_address": h.tenant_sui_address,
         "landlord_sui_address": h.landlord_sui_address,
+        "walrus_lease_blob_id": h.walrus_lease_blob_id,
+        "walrus_release_blob_id": getattr(h, "walrus_release_blob_id", None),
+        "walrus_lease_url": lease_proof.get("walrus_url"),
+        "walrus_release_url": release_proof.get("walrus_url"),
         "created_at": h.created_at.isoformat() if h.created_at else None,
         "released_at": h.released_at.isoformat() if h.released_at else None,
     }

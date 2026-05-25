@@ -10,6 +10,10 @@ class UnitCreate(BaseModel):
     unit_number:  str
     floor_number: Optional[int] = 0
     unit_type:    Optional[str] = "one_bedroom"
+    listing_category: Optional[str] = None
+    bedrooms:     Optional[int] = None
+    bathrooms:    Optional[int] = 1
+    area_sqm:     Optional[Decimal] = None
     rent_amount:  Decimal
     status:       Optional[str] = "vacant"  # vacant | occupied | maintenance
     amenities:    Optional[List[str]] = []
@@ -34,6 +38,10 @@ class UnitUpdate(BaseModel):
     unit_number:  Optional[str] = None
     floor_number: Optional[int] = None
     unit_type:    Optional[str] = None
+    listing_category: Optional[str] = None
+    bedrooms:     Optional[int] = None
+    bathrooms:    Optional[int] = None
+    area_sqm:     Optional[Decimal] = None
     rent_amount:  Optional[Decimal] = None
     amenities:    Optional[List[str]] = None
     description:  Optional[str] = None
@@ -49,6 +57,10 @@ class UnitOut(BaseModel):
     unit_number:  str
     floor_number: int
     unit_type:    str
+    listing_category: Optional[str] = None
+    bedrooms:     Optional[int] = None
+    bathrooms:    Optional[int] = None
+    area_sqm:     Optional[Decimal] = None
     rent_amount:  Decimal
     status:       str
     amenities:    Optional[List[str]] = []

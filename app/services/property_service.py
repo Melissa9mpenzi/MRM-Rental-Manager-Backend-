@@ -54,6 +54,8 @@ def create_property(db: Session, data: PropertyCreate, owner_id: int) -> Propert
         parish=data.parish,
         district=data.district or "Kampala",
         description=data.description,
+        is_active=True,
+        gov_verification_status="pending",
     )
     db.add(prop)
     db.commit()
@@ -151,6 +153,10 @@ def create_unit(
         unit_number=data.unit_number,
         floor_number=data.floor_number or 0,
         unit_type=data.unit_type or "one_bedroom",
+        listing_category=data.listing_category,
+        bedrooms=data.bedrooms,
+        bathrooms=data.bathrooms if data.bathrooms is not None else 1,
+        area_sqm=data.area_sqm,
         rent_amount=data.rent_amount,
         amenities=data.amenities or [],
         description=data.description,

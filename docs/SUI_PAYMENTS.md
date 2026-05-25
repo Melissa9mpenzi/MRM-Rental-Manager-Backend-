@@ -1,5 +1,18 @@
 # Sui payments — RentDirect UG (hybrid Web3)
 
+## Hackathon tracks
+
+| Priority | Track | RentDirect angle |
+|----------|--------|------------------|
+| **Primary** | **DeFi & Payments** | Rental escrow, hybrid MTN + Sui wallet, Move contracts, on-chain receipts — real-world finance, not a DEX. |
+| **Secondary** | **Walrus** | Receipts, leases, KYC hashes, property packets, escrow proofs, gov audit blobs. |
+| **Optional** | Agentic Web | Fraud alerts, dashboard AI insights. |
+| **Avoid** | DeepBook | Not order-book / trading infrastructure. |
+
+**Network for demos:** `SUI_NETWORK=testnet` (stable wallets, realistic txs). See `HACKATHON.md` in the frontend repo.
+
+---
+
 RentDirect uses a **hybrid** model: MTN MoMo, Airtel, and card stay on **Pesapal/MTN**; Sui adds settlement, escrow, and immutable receipts **without replacing** fiat rails.
 
 ## Architecture
@@ -39,8 +52,8 @@ Tenant pay page
 PAYMENT_GATEWAY_PROVIDER=pesapal
 
 # Sui hybrid layer
-SUI_NETWORK=devnet
-SUI_RPC_URL=https://fullnode.devnet.sui.io:443
+SUI_NETWORK=testnet
+SUI_RPC_URL=https://fullnode.testnet.sui.io:443
 SUI_TREASURY_ADDRESS=0xYOUR_DEVNET_ADDRESS
 SUI_PACKAGE_ID=0x...          # after: sui client publish contracts/rentdirect
 SUI_ESCROW_MODULE=escrow
@@ -76,15 +89,15 @@ Set `SUI_PACKAGE_ID` from publish output.
 - **Wallet** page shows blockchain receipts and escrow status
 
 ```env
-VITE_SUI_NETWORK=devnet
+VITE_SUI_NETWORK=testnet
 ```
 
 ## Networks
 
 | Stage | Network |
 |-------|---------|
-| Development | devnet |
-| Hackathon demo | testnet |
+| Hackathon demo (**recommended**) | **testnet** |
+| Experiments only | devnet |
 | Production | mainnet |
 
 ## What impresses judges

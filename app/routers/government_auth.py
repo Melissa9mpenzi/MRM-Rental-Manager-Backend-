@@ -55,7 +55,7 @@ def create_officer_invitation(
     }
     if meta.get("dev_invite_token"):
         data["dev_invite_token"] = meta["dev_invite_token"]
-    if not email_sent and meta.get("invite_url"):
+    if meta.get("invite_url"):
         data["invite_url"] = meta["invite_url"]
     if email_sent:
         message = f"Invitation email sent to {inv.email}."
@@ -73,6 +73,38 @@ def list_officer_invitations(
     _: User = Depends(require_system_admin),
 ):
     return success_response(data=gov_invite.list_invitations(db))
+
+
+@router.post("/invitations/{invitation_id}/resend")
+def resend_officer_invitation(
+    invitation_id: int,
+    db: Session = Depends(get_db),
+    inviter: User = Depends(require_system_admin),
+):
+    try:
+        inv, meta = gov_invite.resend_invitation_email(
+            db, invitation_id=invitation_id, inviter=inviter
+        )
+    except ValueError as e:
+        raise error_response(str(e), status_code=400) from e
+    email_sent = bool(meta.get("email_sent"))
+    data = {
+        "id": inv.id,
+        "email": inv.email,
+        "status": inv.status.value,
+        "email_sent": email_sent,
+        "invite_url": meta.get("invite_url"),
+    }
+    if meta.get("dev_invite_token"):
+        data["dev_invite_token"] = meta["dev_invite_token"]
+    if email_sent:
+        message = f"Invitation email resent to {inv.email}."
+    else:
+        message = (
+            "Could not send the invitation email. Configure SMTP on the backend "
+            "(SMTP_HOST, SMTP_USER, SMTP_PASSWORD, SMTP_FROM) or copy the invite link below."
+        )
+    return success_response(data=data, message=message)
 
 
 @router.get("/invitation/verify")

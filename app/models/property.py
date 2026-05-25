@@ -39,6 +39,8 @@ class Property(Base):
     is_active   = Column(Boolean, default=True)
     # KCCA / government property verification: none | pending | verified | rejected | inspection | illegal
     gov_verification_status = Column(String(24), nullable=False, default="pending")
+    gov_walrus_blob_id = Column(String(256), nullable=True)
+    gov_packet_hash = Column(String(64), nullable=True)
     created_at  = Column(DateTime, default=func.now(), server_default=func.now())
     updated_at  = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())
 
@@ -82,7 +84,11 @@ class Unit(Base):
     unit_type    = Column(Enum(UnitType), default=UnitType.one_bedroom)
     rent_amount  = Column(Numeric(12, 2), nullable=False)
     status       = Column(Enum(UnitStatus), default=UnitStatus.vacant)
-    amenities    = Column(JSON, nullable=True)
+    amenities         = Column(JSON, nullable=True)
+    listing_category  = Column(String(64), nullable=True, index=True)
+    bedrooms          = Column(Integer, nullable=True)
+    bathrooms         = Column(Integer, nullable=True, default=1)
+    area_sqm          = Column(Numeric(10, 2), nullable=True)
     description  = Column(Text, nullable=True)
     created_at   = Column(DateTime, default=func.now(), server_default=func.now())
     updated_at   = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())

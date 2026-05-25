@@ -15,6 +15,9 @@ from app.dependencies import get_current_user
 from app.models.user import User, UserRole
 from app.schemas.auth import UserOut
 from app.config import settings
+from app.runtime import upload_root
+from app.services.blockchain import walrus_anchor_service
+from app.services.kyc_service import reconcile_user_kyc_submission
 from app.utils.kyc_media import (
     content_type_allowed,
     kyc_documents_complete,
@@ -35,7 +38,13 @@ _SELF_SERVICE_ROLES = frozenset({UserRole.tenant, UserRole.landlord, UserRole.st
 
 
 @router.get("/me", response_model=UserOut, summary="Get current user profile")
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if reconcile_user_kyc_submission(db, current_user):
+        db.commit()
+        db.refresh(current_user)
     return current_user
 
 
@@ -63,11 +72,12 @@ def update_me(
     return current_user
 
 
-@router.post("/me/kyc-documents", summary="Upload validated KYC images (landlord & agent)")
+@router.post("/me/kyc-documents", response_model=UserOut, summary="Upload KYC images and submit (landlord & agent)")
 async def upload_kyc_documents(
     id_front: UploadFile = File(..., description="National ID front — any common image format"),
     id_back: UploadFile = File(..., description="National ID back"),
     selfie: UploadFile = File(..., description="Portrait selfie (not a document photo)"),
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     if current_user.role not in (UserRole.landlord, UserRole.staff):
@@ -75,6 +85,7 @@ async def upload_kyc_documents(
             status_code=403,
             detail="KYC document upload is required only for landlord and agent accounts.",
         )
+    root = upload_root()
     for kind, uf in (("id_front", id_front), ("id_back", id_back), ("selfie", selfie)):
         if not content_type_allowed(uf.content_type):
             raise HTTPException(
@@ -86,9 +97,8 @@ async def upload_kyc_documents(
             jpeg_data = normalize_kyc_image_jpeg(raw, kind)  # type: ignore[arg-type]
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"{kind}: {exc.args[0]}") from exc
-        from app.runtime import upload_root
 
-        out_dir = kyc_user_dir(upload_root(), current_user.id)
+        out_dir = kyc_user_dir(root, current_user.id)
         out_dir.mkdir(parents=True, exist_ok=True)
         for old in out_dir.glob(f"{kind}.*"):
             try:
@@ -96,7 +106,17 @@ async def upload_kyc_documents(
             except OSError:
                 pass
         (out_dir / f"{kind}.jpg").write_bytes(jpeg_data)
-    return {"message": "All three documents passed validation and were saved."}
+
+    if not kyc_documents_complete(root, current_user.id):
+        raise HTTPException(status_code=500, detail="Documents saved but verification failed. Please retry.")
+
+    # Submit in the same request (required on Vercel — /tmp is not shared across invocations)
+    current_user.kyc_submitted_at = datetime.utcnow()
+    current_user.kyc_review_status = "pending"
+    walrus_anchor_service.anchor_kyc_submission(db, current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
 
 
 @router.post("/me/kyc-submit", response_model=UserOut, summary="Submit KYC for review after documents uploaded")
@@ -117,6 +137,7 @@ def kyc_submit(
     current_user.kyc_submitted_at = datetime.utcnow()
     if current_user.role in (UserRole.landlord, UserRole.staff):
         current_user.kyc_review_status = "pending"
+        walrus_anchor_service.anchor_kyc_submission(db, current_user)
     db.commit()
     db.refresh(current_user)
     return current_user
