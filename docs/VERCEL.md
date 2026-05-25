@@ -2,11 +2,15 @@
 
 ## Required environment variables
 
-Set these in the Vercel project **Settings → Environment Variables**:
+Set these in the Vercel project **Settings → Environment Variables** (then **Redeploy**):
 
 | Variable | Example |
 |----------|---------|
-| `DATABASE_URL` | `postgresql+psycopg2://user:pass@host/neondb?sslmode=require` |
+| `DATABASE_URL` | `postgresql+psycopg2://user:pass@ep-xxx.neon.tech/neondb?sslmode=require` |
+
+**Without `DATABASE_URL`, `/health` works but login returns 500/503.**
+
+After deploy, open `/health/db` — you want `{"status":"ok","database":"connected"}`.
 | `SECRET_KEY` | long random string |
 | `ENVIRONMENT` | `production` |
 | `ALLOWED_ORIGINS` | `https://mrm-rental-manager-frontend-pink.vercel.app,https://mrm-rental-manager-mobile.vercel.app` |

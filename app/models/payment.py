@@ -10,6 +10,7 @@ class PaymentMethod(str, enum.Enum):
     airtel    = "airtel"
     cash      = "cash"
     bank      = "bank"
+    sui       = "sui"
     other     = "other"
 
 

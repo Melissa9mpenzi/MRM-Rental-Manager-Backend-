@@ -61,6 +61,8 @@ class AuthService:
             return None
         if not self.verify_password(password, user.password_hash):
             return None
+        if getattr(user, "gov_suspended", False):
+            return None
         return user
 
     def create_access_token(self, user_id: int) -> str:

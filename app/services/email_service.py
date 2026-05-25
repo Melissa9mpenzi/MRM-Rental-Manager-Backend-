@@ -18,6 +18,7 @@ from app.services.email_templates import (
     html_government_2fa_otp,
     html_government_invitation,
     html_password_reset,
+    html_payment_receipt,
 )
 
 
@@ -30,9 +31,14 @@ def generate_verification_token(length: int = 32) -> str:
     return secrets.token_urlsafe(length)
 
 
+def smtp_is_configured() -> bool:
+    """True when minimum SMTP settings are present (host + from address)."""
+    return bool((settings.smtp_host or "").strip() and (settings.smtp_from or "").strip())
+
+
 def send_email(to_email: str, subject: str, html_body: str) -> bool:
     """Send email via SMTP. Returns True if the message was handed off to the server."""
-    if not settings.smtp_from or not settings.smtp_host:
+    if not smtp_is_configured():
         print("[EMAIL ERROR] SMTP_FROM or SMTP_HOST is not configured.")
         return False
 
@@ -125,3 +131,24 @@ def send_government_2fa_otp(*, to_email: str, full_name: str, otp: str) -> bool:
     subject = f"Government portal sign-in code · {settings.email_brand_name}"
     html = html_government_2fa_otp(full_name=full_name, otp=otp)
     return send_email(to_email, subject, html)
+
+
+def send_payment_receipt_email(
+    *,
+    to: str,
+    receipt_number: str,
+    amount_ugx: float,
+    period: str,
+    property_name: str,
+    verify_url: str,
+    pdf_path: str | None = None,
+) -> bool:
+    subject = f"Receipt {receipt_number} · {settings.email_brand_name}"
+    html = html_payment_receipt(
+        receipt_number=receipt_number,
+        amount_ugx=amount_ugx,
+        period=period,
+        property_name=property_name,
+        verify_url=verify_url,
+    )
+    return send_email(to, subject, html)

@@ -18,5 +18,6 @@ class AuditLog(Base):
     old_value = Column(Text)  # JSON payload as text
     new_value = Column(Text)  # JSON payload as text
     ip_address = Column(String(45))
+    walrus_blob_id = Column(String(256), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

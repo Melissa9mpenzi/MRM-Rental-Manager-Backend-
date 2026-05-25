@@ -1,6 +1,36 @@
-from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
+
+_DEFAULT_CORS_CSV = (
+    "http://localhost:5173,"
+    "http://localhost:5174,"
+    "http://127.0.0.1:5173,"
+    "http://127.0.0.1:5174,"
+    "https://mrm-rental-manager-frontend-pink.vercel.app,"
+    "https://mrm-rental-manager-mobile.vercel.app"
+)
+
+
+def _parse_allowed_origins(value: str | list[str] | None) -> list[str]:
+    """Parse ALLOWED_ORIGINS from .env — comma-separated or JSON array."""
+    if value is None:
+        return [p.strip() for p in _DEFAULT_CORS_CSV.split(",") if p.strip()]
+    if isinstance(value, list):
+        return [str(p).strip() for p in value if str(p).strip()]
+    s = str(value).strip()
+    if not s:
+        return [p.strip() for p in _DEFAULT_CORS_CSV.split(",") if p.strip()]
+    if s.startswith("["):
+        import json
+
+        try:
+            parsed = json.loads(s)
+            if isinstance(parsed, list):
+                return [str(p).strip() for p in parsed if str(p).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [part.strip() for part in s.split(",") if part.strip()]
 
 
 class Settings(BaseSettings):
@@ -23,13 +53,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60
     refresh_token_expire_days: int = 30
 
-    # CORS — comma-separated in .env, e.g. ALLOWED_ORIGINS=https://app.vercel.app,https://mobile.vercel.app
-    allowed_origins: List[str] = [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "https://mrm-rental-manager-frontend-pink.vercel.app",
-        "https://mrm-rental-manager-mobile.vercel.app",
-    ]
+    # CORS — comma-separated in .env (not JSON). Example:
+    # ALLOWED_ORIGINS=http://localhost:5173,https://your-app.vercel.app
+    allowed_origins_csv: str = Field(default=_DEFAULT_CORS_CSV, validation_alias="ALLOWED_ORIGINS")
 
     # Auth email-link redirects + SPA (must match Vite dev server or production URL)
     frontend_base_url: str = "http://localhost:5173"
@@ -80,23 +106,54 @@ class Settings(BaseSettings):
     flutterwave_secret_key: str = ""
     flutterwave_public_key: str = ""
 
+    # Sui blockchain — hybrid Web3 (does not replace MoMo/Pesapal)
+    sui_network: str = "testnet"
+    sui_rpc_url: str = ""
+    sui_treasury_address: str = ""
+    sui_package_id: str = ""
+    sui_escrow_module: str = "escrow"
+    sui_ugx_per_sui: float = 6_000_000
+    sui_anchor_fiat_receipts: bool = True
+
+    # Walrus decentralized storage
+    walrus_publisher_url: str = ""
+    walrus_aggregator_url: str = ""
+
     # Transactional email branding (optional logo: public HTTPS URL, e.g. CDN or your SPA /logo.png)
     email_brand_name: str = "RentDirect UG"
     email_product_tagline: str = "Property rentals · Uganda"
     email_brand_logo_url: str = ""
     email_support_email: str = ""
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
-    def parse_allowed_origins(cls, value):
-        if isinstance(value, str):
-            return [part.strip() for part in value.split(",") if part.strip()]
-        return value
+    @property
+    def allowed_origins(self) -> List[str]:
+        return _parse_allowed_origins(self.allowed_origins_csv)
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value):
+        if not value or not isinstance(value, str):
+            return value
+        url = value.strip()
+        if url.startswith("postgres://"):
+            url = "postgresql+psycopg2://" + url[len("postgres://") :]
+        elif url.startswith("postgresql://") and "+psycopg2" not in url:
+            url = "postgresql+psycopg2://" + url[len("postgresql://") :]
+        return url
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
 
 
 settings = Settings()
+
+
+def database_url_looks_configured() -> bool:
+    """False when still on the placeholder from config defaults."""
+    url = (settings.database_url or "").lower()
+    if not url:
+        return False
+    if "user:password@localhost" in url:
+        return False
+    if url.endswith("/rental_manager_db") and "localhost" in url:
+        return False
+    return True

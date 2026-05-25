@@ -9,6 +9,7 @@ from app.database import get_db
 from app.dependencies import require_government, require_government_agency
 from app.models.user import User, UserRole
 from app.services import government_service
+from app.services.blockchain import walrus_anchor_service
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/government", tags=["Government"])
@@ -26,6 +27,11 @@ class KccaDecisionBody(BaseModel):
     note: Optional[str] = None
 
 
+class NiraSuspendBody(BaseModel):
+    user_id: int
+    reason: str = "Suspended by NIRA officer — fraud / identity risk."
+
+
 @router.get("/overview")
 def government_overview(
     db: Session = Depends(get_db),
@@ -38,11 +44,14 @@ def government_overview(
 @router.get("/nira/queue")
 def nira_queue(
     status: Optional[str] = None,
-    limit: int = 50,
+    limit: int = 100,
+    search: Optional[str] = None,
     db: Session = Depends(get_db),
     _: User = Depends(require_government_agency("nira")),
 ):
-    return success_response(data=government_service.nira_queue(db, status=status, limit=limit))
+    return success_response(
+        data=government_service.nira_queue(db, status=status, limit=limit, search=search)
+    )
 
 
 @router.post("/nira/decision")
@@ -112,13 +121,76 @@ def fraud_alerts(
     return success_response(data=government_service.fraud_alerts(db, agency=agency, limit=limit))
 
 
+@router.get("/nira/blacklist")
+def nira_blacklist(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_government_agency("nira")),
+):
+    return success_response(data=government_service.nira_blacklist(db, limit=limit))
+
+
+@router.post("/nira/suspend")
+def nira_suspend_user(
+    body: NiraSuspendBody,
+    db: Session = Depends(get_db),
+    officer: User = Depends(require_government_agency("nira")),
+):
+    try:
+        data = government_service.nira_suspend_user(
+            db,
+            officer_id=officer.id,
+            user_id=body.user_id,
+            reason=body.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return success_response(data=data, message="Account suspended.")
+
+
+@router.post("/nira/unsuspend/{user_id}")
+def nira_unsuspend_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    officer: User = Depends(require_government_agency("nira")),
+):
+    try:
+        data = government_service.nira_unsuspend_user(db, officer_id=officer.id, user_id=user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return success_response(data=data, message="Suspension lifted.")
+
+
+@router.get("/workflow")
+def government_workflow(_: User = Depends(require_government)):
+    return success_response(data=government_service.government_workflow_summary())
+
+
 @router.get("/audit-logs")
 def audit_logs(
     limit: int = 100,
     db: Session = Depends(get_db),
-    _: User = Depends(require_government),
+    user: User = Depends(require_government),
 ):
-    return success_response(data=government_service.audit_trail(db, limit=limit))
+    agency = government_service.agency_for_user(user)
+    return success_response(data=government_service.audit_trail(db, agency=agency, limit=limit))
+
+
+@router.post("/audit/export-walrus")
+def export_audit_walrus(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    officer: User = Depends(require_government),
+):
+    """Bundle recent gov audit entries and publish to Walrus (hackathon Walrus track demo)."""
+    agency = government_service.agency_for_user(officer)
+    data = walrus_anchor_service.export_gov_audit_bundle(
+        db,
+        agency=agency,
+        limit=limit,
+        officer_id=officer.id,
+    )
+    return success_response(data=data, message="Audit bundle anchored on Walrus.")
 
 
 @router.get("/me")

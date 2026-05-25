@@ -1,13 +1,17 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import re
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 import os
 
-from app.config import settings
+from app.config import database_url_looks_configured, settings
 from app.runtime import is_serverless, upload_root
 from app.routers import (
     auth,
@@ -27,11 +31,14 @@ from app.routers import (
     messages,
     government,
     government_auth,
+    blockchain,
+    receipts,
+    platform,
 )
 
 # Writable upload root (Vercel/Lambda only allow /tmp; project dir is read-only).
 UPLOAD_ROOT = upload_root()
-for sub in ["properties", "tenants", "receipts", "receipts/proofs", "maintenance", "kyc"]:
+for sub in ["properties", "tenants", "receipts", "receipts/proofs", "receipts/enterprise", "maintenance", "kyc", "messages"]:
     os.makedirs(os.path.join(UPLOAD_ROOT, sub), exist_ok=True)
 
 
@@ -103,13 +110,69 @@ _production_spa_origins = [
 _cors_origins = list(
     dict.fromkeys(_local_vite + _production_spa_origins + list(settings.allowed_origins))
 )
+# Any Vite port on localhost + all *.vercel.app preview/production frontends
+_CORS_ORIGIN_RE = re.compile(
+    r"^https://[\w.-]+\.vercel\.app$|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return False
+    if origin in _cors_origins:
+        return True
+    return bool(_CORS_ORIGIN_RE.match(origin))
+
+
+class CorsFallbackMiddleware(BaseHTTPMiddleware):
+    """Ensure CORS headers on errors/timeouts where default middleware may not run."""
+
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin")
+
+        if request.method == "OPTIONS" and _origin_allowed(origin):
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Credentials": "true",
+                    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": request.headers.get(
+                        "access-control-request-headers", "*"
+                    ),
+                    "Access-Control-Max-Age": "86400",
+                    "Vary": "Origin",
+                },
+            )
+
+        try:
+            response = await call_next(request)
+        except Exception:  # noqa: BLE001
+            logging.getLogger("uvicorn.error").exception("Unhandled error")
+            response = JSONResponse(
+                status_code=500,
+                content={"success": False, "detail": "Internal server error"},
+            )
+
+        if _origin_allowed(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers.setdefault("Vary", "Origin")
+        return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=r"^https://[\w.-]+\.vercel\.app$|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+# Outermost — runs first on request
+app.add_middleware(CorsFallbackMiddleware)
 
 app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
@@ -131,6 +194,9 @@ app.include_router(saved_units.router, prefix=API)
 app.include_router(messages.router,    prefix=API)
 app.include_router(government.router,  prefix=API)
 app.include_router(government_auth.router, prefix=API)
+app.include_router(blockchain.router,     prefix=API)
+app.include_router(receipts.router,         prefix=API)
+app.include_router(platform.router,       prefix=API)
 
 
 @app.get("/", tags=["Health"])
@@ -150,4 +216,35 @@ def root():
 
 @app.get("/health", tags=["Health"])
 def health():
-    return {"status": "ok", "version": "1.0.0"}
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "database_configured": database_url_looks_configured(),
+    }
+
+
+@app.get("/health/db", tags=["Health"])
+def health_db():
+    """Verify Postgres/Neon connectivity (use after setting DATABASE_URL on Vercel)."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.config import database_url_looks_configured
+    from app.database import engine
+
+    if not database_url_looks_configured():
+        return {
+            "status": "error",
+            "database": "not_configured",
+            "hint": "Set DATABASE_URL on Vercel (postgresql+psycopg2://...neon.tech/...?sslmode=require)",
+        }
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ok", "database": "connected"}
+    except SQLAlchemyError as exc:
+        return {
+            "status": "error",
+            "database": "connection_failed",
+            "detail": str(exc)[:240],
+        }

@@ -72,6 +72,7 @@ def gateway_public_status() -> dict:
             "mtn_momo": name in ("mtn_momo", "pesapal", "mock"),
             "airtel": name in ("pesapal", "mock"),
             "card": name in ("pesapal", "flutterwave", "mock"),
+            "sui": True,
         },
         "requires_webhook_https": settings.environment == "production",
         "setup_hint": _setup_hint(name, configured, mock),

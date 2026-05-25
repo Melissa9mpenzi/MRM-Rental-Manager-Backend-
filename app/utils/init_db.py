@@ -45,13 +45,15 @@ from app.models import (  # noqa: F401
     SavedUnit,
     MessageThread,
     ThreadParticipant,
-    Message,
+    BlockchainWallet,
+    BlockchainReceipt,
+    EscrowHold,
 )
 
 logger = logging.getLogger(__name__)
 
 # Bump when startup migration steps change; local stamp skips slow Neon round-trips on reload.
-_STARTUP_STAMP_VERSION = "v10-gov-2fa-otp"
+_STARTUP_STAMP_VERSION = "v15-walrus-anchors"
 _STARTUP_STAMP_FILE = Path(__file__).resolve().parent.parent.parent / ".startup_migrations.stamp"
 
 
@@ -136,6 +138,11 @@ def ensure_users_column_migrations() -> None:
         ("gov_2fa_otp", "VARCHAR(10) NULL", "VARCHAR(10) NULL", "VARCHAR(10) NULL"),
         ("gov_2fa_otp_expiry", "TIMESTAMP WITHOUT TIME ZONE NULL", "DATETIME NULL", "TIMESTAMP NULL"),
         ("gov_onboarding_complete", "BOOLEAN NOT NULL DEFAULT false", "INTEGER NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT false"),
+        ("gov_suspended", "BOOLEAN NOT NULL DEFAULT false", "INTEGER NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT false"),
+        ("gov_suspension_reason", "VARCHAR(500) NULL", "VARCHAR(500) NULL", "VARCHAR(500) NULL"),
+        ("gov_suspended_at", "TIMESTAMP WITHOUT TIME ZONE NULL", "DATETIME NULL", "TIMESTAMP NULL"),
+        ("kyc_walrus_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL", "VARCHAR(256) NULL"),
+        ("kyc_manifest_hash", "VARCHAR(64) NULL", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _user_column_ddls:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)
@@ -369,8 +376,55 @@ def ensure_government_schema_migrations() -> None:
                 with engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN gov_verification_status {ddl}"))
                 logger.info("Added properties.gov_verification_status")
+            for col_name, ddl in (
+                ("gov_walrus_blob_id", "VARCHAR(256) NULL"),
+                ("gov_packet_hash", "VARCHAR(64) NULL"),
+            ):
+                if col_name not in col_names:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+                    logger.info("Added properties.%s", col_name)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_government_schema_migrations properties: %s", exc)
+
+
+def ensure_walrus_anchor_migrations() -> None:
+    """Walrus proof columns on audit_logs and escrow_holds."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    url = settings.database_url.lower()
+    is_pg = "postgresql" in url
+    is_sqlite = "sqlite" in url
+
+    for table, columns in (
+        (
+            "audit_logs",
+            [("walrus_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL", "VARCHAR(256) NULL")],
+        ),
+        (
+            "escrow_holds",
+            [
+                ("walrus_lease_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL", "VARCHAR(256) NULL"),
+                ("walrus_release_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL", "VARCHAR(256) NULL"),
+            ],
+        ),
+    ):
+        try:
+            if not insp.has_table(table, schema=schema):
+                continue
+            col_names = {c["name"] for c in insp.get_columns(table, schema=schema)}
+            qual = f'"{schema}"."{table}"' if schema else table
+            for col_name, ddl_pg, ddl_sqlite, ddl_other in columns:
+                if col_name in col_names:
+                    continue
+                ddl = ddl_pg if is_pg else (ddl_sqlite if is_sqlite else ddl_other)
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+                logger.info("Added %s.%s", table, col_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ensure_walrus_anchor_migrations %s: %s", table, exc)
 
 
 def ensure_government_invitation_tables() -> None:
@@ -396,13 +450,115 @@ def ensure_payment_checkout_table() -> None:
         logger.warning("ensure_payment_checkout_table: %s", exc)
 
 
+def ensure_blockchain_tables() -> None:
+    """Create blockchain_wallets, blockchain_receipts, escrow_holds."""
+    for model in (BlockchainWallet, BlockchainReceipt, EscrowHold):
+        try:
+            model.__table__.create(bind=engine, checkfirst=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ensure_blockchain_tables (%s): %s", model.__tablename__, exc)
+
+
+def ensure_receipt_tables() -> None:
+    from app.models.system_receipt import SystemReceipt
+
+    try:
+        SystemReceipt.__table__.create(bind=engine, checkfirst=True)
+        logger.info("Ensured system_receipts table")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_receipt_tables: %s", exc)
+
+
+def ensure_unit_listing_filter_columns() -> None:
+    """Bedrooms, bathrooms, category, area for marketplace filters."""
+    schema = postgres_table_schema
+    insp = inspect(engine)
+    try:
+        if not insp.has_table("units", schema=schema):
+            return
+        qual = f'"{schema}"."units"' if schema else "units"
+        cols = {c["name"] for c in insp.get_columns("units", schema=schema)}
+        adds = [
+            ("listing_category", "VARCHAR(64) NULL"),
+            ("bedrooms", "INTEGER NULL"),
+            ("bathrooms", "INTEGER NULL DEFAULT 1"),
+            ("area_sqm", "NUMERIC(10,2) NULL"),
+        ]
+        for name, ddl in adds:
+            if name not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {name} {ddl}"))
+                logger.info("Added units.%s", name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_unit_listing_filter_columns: %s", exc)
+
+
+def ensure_rental_hub_messaging_migrations() -> None:
+    """Extend message_threads / messages for Rental Hub (property chat, types, attachments)."""
+    from app.models.conversation import Message, MessageThread, ThreadParticipant
+
+    for model in (MessageThread, ThreadParticipant, Message):
+        try:
+            model.__table__.create(bind=engine, checkfirst=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ensure_rental_hub tables (%s): %s", model.__tablename__, exc)
+
+    schema = postgres_table_schema
+    insp = inspect(engine)
+    try:
+        if insp.has_table("message_threads", schema=schema):
+            qual = f'"{schema}"."message_threads"' if schema else "message_threads"
+            cols = {c["name"] for c in insp.get_columns("message_threads", schema=schema)}
+            adds = [
+                ("property_id", "INTEGER NULL"),
+                ("thread_type", "VARCHAR(24) NOT NULL DEFAULT 'inquiry'"),
+                ("listing_title", "VARCHAR(255) NULL"),
+                ("archived_at", "TIMESTAMP NULL"),
+            ]
+            for name, ddl in adds:
+                if name not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {name} {ddl}"))
+                    logger.info("Added message_threads.%s", name)
+        if insp.has_table("thread_participants", schema=schema):
+            qual = f'"{schema}"."thread_participants"' if schema else "thread_participants"
+            cols = {c["name"] for c in insp.get_columns("thread_participants", schema=schema)}
+            if "last_read_at" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN last_read_at TIMESTAMP NULL"))
+                logger.info("Added thread_participants.last_read_at")
+        if insp.has_table("messages", schema=schema):
+            qual = f'"{schema}"."messages"' if schema else "messages"
+            cols = {c["name"] for c in insp.get_columns("messages", schema=schema)}
+            adds = [
+                ("message_kind", "VARCHAR(16) NOT NULL DEFAULT 'user'"),
+                ("event_code", "VARCHAR(64) NULL"),
+                ("attachment_url", "VARCHAR(500) NULL"),
+                ("attachment_name", "VARCHAR(255) NULL"),
+                ("attachment_mime", "VARCHAR(128) NULL"),
+                ("blockchain_hash", "VARCHAR(128) NULL"),
+            ]
+            for name, ddl in adds:
+                if name not in cols:
+                    with engine.begin() as conn:
+                        conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {name} {ddl}"))
+                    logger.info("Added messages.%s", name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_rental_hub_messaging_migrations: %s", exc)
+
+
 def run_incremental_migrations() -> None:
     """ALTER existing DBs — safe to run repeatedly."""
     ensure_users_column_migrations()
     ensure_tenants_column_migrations()
     ensure_payments_column_migrations()
     ensure_payment_checkout_table()
+    ensure_blockchain_tables()
+    ensure_receipt_tables()
+    ensure_rental_hub_messaging_migrations()
+    ensure_unit_listing_filter_columns()
     ensure_government_schema_migrations()
+    ensure_walrus_anchor_migrations()
     ensure_government_invitation_tables()
 
 

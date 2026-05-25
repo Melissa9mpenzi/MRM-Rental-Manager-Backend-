@@ -202,7 +202,22 @@ def verify_email_token(payload: VerifyEmailTokenBody, db: Session = Depends(get_
 # ── LOGIN ─────────────────────────────────────────────────────────
 @router.post("/login")
 def login(payload: UserLogin, db: Session = Depends(get_db)):
-    user = auth_service.authenticate(db, payload.email, payload.password)
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from app.config import database_url_looks_configured
+
+    if not database_url_looks_configured():
+        raise error_response(
+            "Server database is not configured. Set DATABASE_URL on the API host (Vercel → Environment Variables).",
+            status_code=503,
+        )
+    try:
+        user = auth_service.authenticate(db, payload.email, payload.password)
+    except SQLAlchemyError:
+        raise error_response(
+            "Could not reach the database. Check DATABASE_URL on Vercel and that Neon allows connections.",
+            status_code=503,
+        )
     if not user:
         raise error_response("Invalid email or password.", status_code=401)
     if is_government_officer(user.role):
@@ -216,7 +231,14 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     if not user.email_verified:
         raise error_response("Please verify your email before logging in.", status_code=403)
 
-    tokens = auth_service.create_tokens(db, user)
+    try:
+        tokens = auth_service.create_tokens(db, user)
+    except SQLAlchemyError:
+        raise error_response(
+            "Could not save session to the database. Check DATABASE_URL on Vercel.",
+            status_code=503,
+        )
+
     payload_out = {
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
