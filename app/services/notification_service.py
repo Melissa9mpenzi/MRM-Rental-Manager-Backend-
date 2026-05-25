@@ -37,10 +37,28 @@ def mark_all_read(db: Session, user_id: int):
     db.commit()
 
 
-def create_notification(db: Session, user_id: int, title: str, message: str,
-                        notif_type: str = "general", link: str = None):
-    n = Notification(user_id=user_id, title=title, message=message,
-                     notif_type=notif_type, link=link)
+def create_notification(
+    db: Session,
+    user_id: int,
+    title: str,
+    message: str,
+    notif_type: str | NotifType = "general",
+    link: str | None = None,
+):
+    nt = notif_type
+    if isinstance(nt, str):
+        try:
+            nt = NotifType(nt)
+        except ValueError:
+            nt = NotifType.general
+    n = Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        notif_type=nt,
+        link=link,
+    )
     db.add(n)
     db.commit()
+    db.refresh(n)
     return n

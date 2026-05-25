@@ -81,6 +81,7 @@ class UserOut(BaseModel):
     email: str
     full_name: str
     phone: Optional[str] = None
+    national_id_number: Optional[str] = None
     role: str
     is_active: bool
     email_verified: bool

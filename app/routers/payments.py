@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_tenant
+from app.dependencies import get_current_user, require_landlord, require_tenant, _role_str
 from app.models.user import User
 from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentUpdate, PaymentOut
@@ -23,9 +23,9 @@ def list_payments(
     limit:  int = Query(100),
     offset: int = Query(0),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
-    """List payments with standardized response"""
+    """List payment transactions for this landlord (cash, MoMo, Pesapal, etc.)."""
     payments = payment_service.get_all_payments(db, current_user.id, limit, offset)
     return success_response(data=payments)
 
@@ -110,6 +110,13 @@ def wallet_summary(
     current_user: User = Depends(get_current_user),
 ):
     """Totals and per-method breakdown for the in-app wallet (rent payments in DB)."""
+    if _role_str(current_user) not in (
+        "tenant",
+        "landlord",
+        "system_admin",
+        "staff",
+    ):
+        require_landlord(current_user)
     data = payment_service.wallet_summary_for_user(db, current_user)
     return success_response(data=data)
 

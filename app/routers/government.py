@@ -1,4 +1,5 @@
 """Secure government portal API — NIRA, KCCA, URA (web-only officers)."""
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,6 +14,7 @@ from app.services.blockchain import walrus_anchor_service
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/government", tags=["Government"])
+logger = logging.getLogger(__name__)
 
 
 class NiraDecisionBody(BaseModel):
@@ -38,7 +40,15 @@ def government_overview(
     user: User = Depends(require_government),
 ):
     agency = government_service.agency_for_user(user)
-    return success_response(data=government_service.overview_summary(db, agency=agency))
+    try:
+        data = government_service.overview_summary(db, agency=agency)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("government overview failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Government overview is temporarily unavailable. Retry shortly.",
+        ) from exc
+    return success_response(data=data)
 
 
 @router.get("/nira/queue")
@@ -108,7 +118,15 @@ def ura_reports(
     db: Session = Depends(get_db),
     _: User = Depends(require_government_agency("ura")),
 ):
-    return success_response(data=government_service.ura_rental_reports(db, limit=limit))
+    try:
+        data = government_service.ura_rental_reports(db, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("URA reports failed")
+        raise HTTPException(
+            status_code=500,
+            detail="URA reports are temporarily unavailable. Retry shortly.",
+        ) from exc
+    return success_response(data=data)
 
 
 @router.get("/fraud/alerts")
@@ -118,7 +136,15 @@ def fraud_alerts(
     user: User = Depends(require_government),
 ):
     agency = government_service.agency_for_user(user)
-    return success_response(data=government_service.fraud_alerts(db, agency=agency, limit=limit))
+    try:
+        data = government_service.fraud_alerts(db, agency=agency, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("fraud alerts failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Fraud alerts are temporarily unavailable. Retry shortly.",
+        ) from exc
+    return success_response(data=data)
 
 
 @router.get("/nira/blacklist")

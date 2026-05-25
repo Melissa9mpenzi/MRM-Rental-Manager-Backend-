@@ -28,7 +28,7 @@ def compute_tenant_balance(tenant: Tenant, as_of: date = None) -> dict:
     if tenant.status != TenantStatus.active:
         return {"months_due": 0, "total_due": Decimal("0"), "total_paid": Decimal("0"), "balance_due": Decimal("0"), "months_in_arrears": 0}
 
-    if tenant.monthly_rent is None:
+    if tenant.monthly_rent is None or tenant.lease_start is None:
         return {"months_due": 0, "total_due": Decimal("0"), "total_paid": Decimal("0"), "balance_due": Decimal("0"), "months_in_arrears": 0}
 
     effective_end = min(tenant.lease_end, as_of) if tenant.lease_end else as_of

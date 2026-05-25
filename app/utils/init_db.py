@@ -48,12 +48,17 @@ from app.models import (  # noqa: F401
     BlockchainWallet,
     BlockchainReceipt,
     EscrowHold,
+    AgentLead,
+    AgentClient,
+    AgentScheduleEvent,
+    AgentDeal,
+    AgentCommission,
 )
 
 logger = logging.getLogger(__name__)
 
 # Bump when startup migration steps change; local stamp skips slow Neon round-trips on reload.
-_STARTUP_STAMP_VERSION = "v15-walrus-anchors"
+_STARTUP_STAMP_VERSION = "v17-gov-portal-columns"
 _STARTUP_STAMP_FILE = Path(__file__).resolve().parent.parent.parent / ".startup_migrations.stamp"
 
 
@@ -269,6 +274,14 @@ def ensure_payments_column_migrations() -> None:
         ),
         ("reference", "VARCHAR(100) NULL", "VARCHAR(100) NULL", "VARCHAR(100) NULL"),
         ("updated_at", "TIMESTAMP WITHOUT TIME ZONE NULL", "DATETIME NULL", "TIMESTAMP NULL"),
+        (
+            "is_deleted",
+            "BOOLEAN NOT NULL DEFAULT false",
+            "INTEGER NOT NULL DEFAULT 0",
+            "BOOLEAN NOT NULL DEFAULT false",
+        ),
+        ("period_month", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1"),
+        ("period_year", "INTEGER NOT NULL DEFAULT 2025", "INTEGER NOT NULL DEFAULT 2025", "INTEGER NOT NULL DEFAULT 2025"),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _payment_column_ddls:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)
@@ -322,13 +335,20 @@ def ensure_government_schema_migrations() -> None:
     is_pg = "postgresql" in url
 
     if is_pg:
+        enum_type = (
+            f'"{postgres_table_schema}".userrole'
+            if postgres_table_schema
+            else "userrole"
+        )
         for val in ("system_admin", "gov_super", "gov_nira", "gov_kcca", "gov_ura"):
             try:
                 with engine.begin() as conn:
-                    conn.execute(text(f"ALTER TYPE userrole ADD VALUE IF NOT EXISTS '{val}'"))
-                logger.info("Ensured userrole enum value %s", val)
+                    conn.execute(
+                        text(f"ALTER TYPE {enum_type} ADD VALUE IF NOT EXISTS '{val}'")
+                    )
+                logger.info("Ensured %s enum value %s", enum_type, val)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not add userrole.%s: %s", val, exc)
+                logger.warning("Could not add %s.%s: %s", enum_type, val, exc)
         try:
             qual = f'"{schema}"."users"' if schema else "users"
             with engine.begin() as conn:
@@ -386,6 +406,18 @@ def ensure_government_schema_migrations() -> None:
                     logger.info("Added properties.%s", col_name)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_government_schema_migrations properties: %s", exc)
+
+    try:
+        if insp.has_table("properties", schema=schema):
+            col_names = {c["name"] for c in insp.get_columns("properties", schema=schema)}
+            qual = f'"{schema}"."properties"' if schema else "properties"
+            if "video_path" not in col_names:
+                ddl = "VARCHAR(500) NULL"
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN video_path {ddl}"))
+                logger.info("Added properties.video_path")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_government_schema_migrations properties video_path: %s", exc)
 
 
 def ensure_walrus_anchor_migrations() -> None:
@@ -562,10 +594,22 @@ def run_incremental_migrations() -> None:
     ensure_government_invitation_tables()
 
 
+def _startup_stamp_path() -> Path:
+    """Local dev: project root stamp. Serverless: /tmp (writable, ephemeral)."""
+    from app.runtime import is_serverless
+
+    if is_serverless():
+        return Path("/tmp") / ".startup_migrations.stamp"
+    return _STARTUP_STAMP_FILE
+
+
 def run_startup_migrations() -> None:
     """
     Lightweight boot migrations for uvicorn (no full init_tables).
-    Skipped when SKIP_STARTUP_MIGRATIONS=true or stamp file matches version.
+    Skipped when SKIP_STARTUP_MIGRATIONS=true.
+
+    Incremental ALTER steps always run (idempotent). The stamp only avoids
+    repeating them on the same local uvicorn process during hot reload.
     """
     from app.config import settings
 
@@ -573,18 +617,23 @@ def run_startup_migrations() -> None:
         logger.info("Startup migrations skipped (SKIP_STARTUP_MIGRATIONS).")
         return
 
+    stamp_path = _startup_stamp_path()
+    skip_incremental = False
     try:
-        if _STARTUP_STAMP_FILE.exists():
-            if _STARTUP_STAMP_FILE.read_text(encoding="utf-8").strip() == _STARTUP_STAMP_VERSION:
-                logger.info("Startup migrations skipped (stamp %s).", _STARTUP_STAMP_VERSION)
-                return
+        if stamp_path.exists():
+            if stamp_path.read_text(encoding="utf-8").strip() == _STARTUP_STAMP_VERSION:
+                skip_incremental = True
     except OSError as exc:
         logger.warning("Could not read migration stamp: %s", exc)
+
+    if skip_incremental:
+        logger.info("Startup migrations skipped (stamp %s).", _STARTUP_STAMP_VERSION)
+        return
 
     logger.info("Running startup migrations…")
     run_incremental_migrations()
     try:
-        _STARTUP_STAMP_FILE.write_text(_STARTUP_STAMP_VERSION, encoding="utf-8")
+        stamp_path.write_text(_STARTUP_STAMP_VERSION, encoding="utf-8")
     except OSError as exc:
         logger.warning("Could not write migration stamp: %s", exc)
     logger.info("Startup migrations complete.")

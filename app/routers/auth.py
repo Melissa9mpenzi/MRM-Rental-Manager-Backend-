@@ -1,7 +1,7 @@
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 
@@ -92,7 +92,7 @@ def _send_registration_email(
     full_name: str,
     token: str,
     otp: str,
-) -> None:
+) -> bool:
     sent = send_registration_verification_link(
         email,
         full_name,
@@ -101,13 +101,52 @@ def _send_registration_email(
         otp=otp,
     )
     if not sent:
-        print(f"[WARN] Could not send verification email to {email}. Token: {token}  OTP: {otp}")
+        print(
+            f"\n[WARN] Verification email was NOT sent (configure SMTP_* on the API host).\n"
+            f"       Email: {email}\n"
+            f"       Code (valid 15 min): {otp}\n"
+        )
+    return sent
+
+
+def _issue_verification_codes(user, db: Session) -> tuple[str, str]:
+    """Refresh link token + 6-digit OTP (15 minutes)."""
+    token = generate_verification_token()
+    otp = generate_otp()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
+    user.verification_token = token
+    user.verification_token_expiry = expiry
+    user.verification_otp = otp
+    user.verification_otp_expiry = expiry
+    db.commit()
+    db.refresh(user)
+    return token, otp
+
+
+def _registration_response_body(user, otp: str, email_sent: bool) -> dict:
+    body = {
+        "message": (
+            "Account created. Check your email for a 6-digit code."
+            if email_sent
+            else "Account created. We could not send email — use Resend code or the one-time code shown below."
+        ),
+        "email": user.email,
+        "email_sent": email_sent,
+    }
+    if not email_sent:
+        body["verification_otp_fallback"] = otp
+    elif settings.environment == "development":
+        body["dev_verification_otp"] = otp
+    return body
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 @router.post("/register", status_code=201)
 def register(
     payload: UserRegister,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     if payload.role in (
@@ -132,20 +171,40 @@ def register(
         db, payload, verification_token=token, token_expiry=expiry, verification_otp=otp
     )
 
-    background_tasks.add_task(
-        _send_registration_email,
-        user.email,
-        user.full_name,
-        token,
-        otp,
-    )
+    email_sent = _send_registration_email(user.email, user.full_name, token, otp)
+    return _registration_response_body(user, otp, email_sent)
 
+
+@router.post("/resend-verification")
+def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
+    """Send a fresh 6-digit code (agent, landlord, tenant signup)."""
+    user = db.query(User).filter(User.email == str(payload.email)).first()
+    if not user:
+        return {
+            "message": "If that email is registered and not yet verified, a new code has been sent.",
+            "email_sent": None,
+        }
+    if user.email_verified:
+        return {
+            "message": "This email is already verified. You can sign in.",
+            "email_verified": True,
+            "email_sent": True,
+        }
+
+    token, otp = _issue_verification_codes(user, db)
+    email_sent = _send_registration_email(user.email, user.full_name, token, otp)
     body = {
-        "message": "Account created. Check your email for a 6-digit code and verification link.",
+        "message": (
+            "A new verification code was sent to your inbox."
+            if email_sent
+            else "Email could not be sent. Use the one-time code below or configure SMTP on the server."
+        ),
         "email": user.email,
-        "email_sent": None,
+        "email_sent": email_sent,
     }
-    if settings.environment == "development":
+    if not email_sent:
+        body["verification_otp_fallback"] = otp
+    elif settings.environment == "development":
         body["dev_verification_otp"] = otp
     return body
 
@@ -190,7 +249,10 @@ def verify_email_token(payload: VerifyEmailTokenBody, db: Session = Depends(get_
     if not _email_verification_secret_accepted(user, payload.token, now):
         exp = _expiry_utc(user.verification_token_expiry) or _expiry_utc(user.verification_otp_expiry)
         if (user.verification_token or user.verification_otp) and exp and now > exp:
-            raise error_response("Verification code has expired. Register again or request a new email.", status_code=400)
+            raise error_response(
+                "Verification code has expired. Use Resend code on the verify page or register again.",
+                status_code=400,
+            )
         raise error_response("Invalid verification code or link token.", status_code=400)
     user.email_verified = True
     _clear_email_verification_fields(user)
@@ -213,11 +275,11 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         )
     try:
         user = auth_service.authenticate(db, payload.email, payload.password)
-    except SQLAlchemyError:
-        raise error_response(
-            "Could not reach the database. Check DATABASE_URL on Vercel and that Neon allows connections.",
-            status_code=503,
-        )
+    except SQLAlchemyError as exc:
+        from app.db_errors import database_error_response
+
+        msg, code = database_error_response(exc)
+        raise error_response(msg, status_code=code)
     if not user:
         raise error_response("Invalid email or password.", status_code=401)
     if is_government_officer(user.role):
@@ -233,11 +295,11 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 
     try:
         tokens = auth_service.create_tokens(db, user)
-    except SQLAlchemyError:
-        raise error_response(
-            "Could not save session to the database. Check DATABASE_URL on Vercel.",
-            status_code=503,
-        )
+    except SQLAlchemyError as exc:
+        from app.db_errors import database_error_response
+
+        msg, code = database_error_response(exc)
+        raise error_response(msg, status_code=code)
 
     payload_out = {
         "access_token": tokens["access_token"],

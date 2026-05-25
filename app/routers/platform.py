@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.services import activity_service, platform_search_service
+from app.services import activity_service, platform_data_service, platform_search_service
+from app.dependencies import require_roles
+from app.models.user import UserRole
 from app.services.gateway.config import gateway_public_status, is_gateway_configured
 from app.config import settings
 from app.utils.response import success_response
@@ -32,6 +34,15 @@ def platform_search(
     user: User = Depends(get_current_user),
 ):
     return success_response(data=platform_search_service.global_search(db, user, q=q, limit=limit))
+
+
+@router.get("/data-summary")
+def platform_data_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles([UserRole.system_admin])),
+):
+    """Live row counts from Postgres — confirms the platform is not using demo seed data."""
+    return success_response(data=platform_data_service.live_data_summary(db))
 
 
 @router.get("/system-status")

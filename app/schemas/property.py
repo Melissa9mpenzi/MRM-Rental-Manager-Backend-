@@ -101,6 +101,7 @@ class PropertyUpdate(BaseModel):
     district:    Optional[str] = None
     description: Optional[str] = None
     photo_path:  Optional[str] = None
+    video_path:  Optional[str] = None
 
 
 class PropertyOut(BaseModel):
@@ -112,6 +113,7 @@ class PropertyOut(BaseModel):
     district:              Optional[str] = None
     description:           Optional[str] = None
     photo_path:            Optional[str] = None
+    video_path:            Optional[str] = None
     is_active:             bool
     total_units:           int
     occupied_units:        int
@@ -132,6 +134,7 @@ class PropertySummary(BaseModel):
     parish:                Optional[str] = None
     district:              Optional[str] = None
     photo_path:            Optional[str] = None
+    video_path:            Optional[str] = None
     is_active:             bool
     total_units:           int
     occupied_units:        int

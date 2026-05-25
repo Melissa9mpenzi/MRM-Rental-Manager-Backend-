@@ -17,3 +17,10 @@ from app.models.blockchain_wallet import BlockchainWallet
 from app.models.blockchain_receipt import BlockchainReceipt, ReceiptAnchorStatus
 from app.models.escrow_hold import EscrowHold, EscrowStatus
 from app.models.system_receipt import SystemReceipt, ReceiptType, ReceiptStatus
+from app.models.agent_crm import (
+    AgentLead,
+    AgentClient,
+    AgentScheduleEvent,
+    AgentDeal,
+    AgentCommission,
+)

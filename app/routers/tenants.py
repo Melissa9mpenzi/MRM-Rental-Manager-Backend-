@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -6,9 +6,9 @@ import shutil, os, uuid
 from datetime import date
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import require_landlord
 from app.models.user import User
-from app.schemas.tenant import TenantOut, TenantCreate, TenantUpdate
+from app.schemas.tenant import TenantCreate, TenantUpdate
 from app.services.tenant_service import tenant_service
 from app.config import settings
 from app.utils.response import success_response
@@ -16,31 +16,31 @@ from app.utils.response import success_response
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
 
 
-@router.get("", response_model=List[TenantOut])
+@router.get("")
 def list_tenants(
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     unit_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
-    """List tenants with standardized response"""
+    """List tenant profiles for this landlord's portfolio (not payment/cash transactions)."""
     tenants = tenant_service.list_tenants(db, current_user.id, search=search, status=status, unit_id=unit_id)
     return success_response(data=tenants)
 
 
-@router.get("/{tenant_id}", response_model=TenantOut)
+@router.get("/{tenant_id}")
 def get_tenant(
     tenant_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
     """Get single tenant with standardized response"""
     tenant = tenant_service.get_tenant(db, tenant_id, current_user.id)
     return success_response(data=tenant)
 
 
-@router.post("", response_model=TenantOut, status_code=201)
+@router.post("", status_code=201)
 async def create_tenant(
     # Form fields
     unit_id:                 Optional[int]   = Form(None),
@@ -59,7 +59,7 @@ async def create_tenant(
     # File upload for deposit receipt
     deposit_receipt:         Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
     """Create tenant with standardized response"""
     deposit_receipt_path = None
@@ -95,7 +95,7 @@ async def create_tenant(
     return success_response(data=tenant, message="Tenant created successfully")
 
 
-@router.put("/{tenant_id}", response_model=TenantOut)
+@router.put("/{tenant_id}")
 def update_tenant(
     tenant_id: int,
     unit_id:                 Optional[int]   = Form(None),
@@ -112,7 +112,7 @@ def update_tenant(
     deposit_paid:            Optional[bool]  = Form(None),
     notes:                   Optional[str]   = Form(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
     """Update tenant with standardized response"""
     patch = {}
@@ -147,11 +147,11 @@ def update_tenant(
     return success_response(data=updated, message="Tenant updated successfully")
 
 
-@router.post("/{tenant_id}/move-out", response_model=TenantOut)
+@router.post("/{tenant_id}/move-out")
 def move_out(
     tenant_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
     """Move out tenant with standardized response"""
     result = tenant_service.move_out_tenant(db, tenant_id, current_user.id)

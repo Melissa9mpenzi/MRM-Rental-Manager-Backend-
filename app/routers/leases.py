@@ -9,6 +9,7 @@ from app.models.lease import Lease, LeaseStatus
 from app.models.tenant import Tenant
 from app.models.property import Unit, UnitStatus
 from app.schemas.lease import LeaseCreate, LeaseUpdate, LeaseTerminate, LeaseOut
+from app.services.lease_service import get_lease_for_owner, list_leases_for_owner, serialize_lease
 from app.utils.response import success_response, error_response
 
 router = APIRouter(prefix="/leases", tags=["Leases"])
@@ -87,8 +88,15 @@ def list_leases(
             return success_response(data=[])
         q = q.filter(Lease.tenant_id == tenant.id)
     elif current_user.role in ("landlord", "staff"):
-        q = q.filter(Lease.owner_id == current_user.id)
-    # Admin sees all
+        data = list_leases_for_owner(
+            db,
+            current_user.id,
+            tenant_id=tenant_id,
+            unit_id=unit_id,
+            status=status,
+        )
+        return success_response(data=data)
+    # Admin sees all (serialized)
 
     if tenant_id:
         q = q.filter(Lease.tenant_id == tenant_id)
@@ -97,8 +105,15 @@ def list_leases(
     if status:
         q = q.filter(Lease.status == status)
 
-    leases = q.order_by(Lease.created_at.desc()).all()
-    return success_response(data=leases)
+    from sqlalchemy.orm import joinedload
+    from app.models.property import Unit
+
+    leases = (
+        q.options(joinedload(Lease.tenant), joinedload(Lease.unit).joinedload(Unit.parent_property))
+        .order_by(Lease.created_at.desc())
+        .all()
+    )
+    return success_response(data=[serialize_lease(row) for row in leases])
 
 
 @router.get("/{lease_id}")
@@ -108,11 +123,18 @@ def get_lease(
     current_user: User = Depends(get_current_user),
 ):
     """Get single lease with standardized response"""
-    lease = db.query(Lease).filter(Lease.id == lease_id).first()
+    from sqlalchemy.orm import joinedload
+    from app.models.property import Unit
+
+    lease = (
+        db.query(Lease)
+        .options(joinedload(Lease.tenant), joinedload(Lease.unit).joinedload(Unit.parent_property))
+        .filter(Lease.id == lease_id)
+        .first()
+    )
     if not lease:
         raise error_response("Lease not found.", status_code=404)
 
-    # Permission check
     if current_user.role == "tenant":
         tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
         if not tenant or lease.tenant_id != tenant.id:
@@ -120,7 +142,7 @@ def get_lease(
     elif current_user.role in ("landlord", "staff") and lease.owner_id != current_user.id:
         raise error_response("Access denied.", status_code=403)
 
-    return success_response(data=lease)
+    return success_response(data=serialize_lease(lease))
 
 
 @router.put("/{lease_id}")
@@ -152,7 +174,8 @@ def update_lease(
 
     db.commit()
     db.refresh(lease)
-    return success_response(data=lease, message="Lease updated successfully")
+    row = get_lease_for_owner(db, lease_id, current_user.id)
+    return success_response(data=row, message="Lease updated successfully")
 
 
 @router.post("/{lease_id}/terminate")
@@ -183,4 +206,5 @@ def terminate_lease(
 
     db.commit()
     db.refresh(lease)
-    return success_response(data=lease, message="Lease terminated successfully")
+    row = get_lease_for_owner(db, lease_id, current_user.id)
+    return success_response(data=row, message="Lease terminated successfully")

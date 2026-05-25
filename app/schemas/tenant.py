@@ -28,6 +28,16 @@ class TenantCreate(BaseModel):
         }
 
 
+class TenantSelfUpdate(BaseModel):
+    """Fields a logged-in tenant may update on their own record."""
+
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    national_id: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_phone: Optional[str] = None
+
+
 class TenantUpdate(BaseModel):
     unit_id: Optional[int] = None
     full_name: Optional[str] = None
@@ -73,13 +83,16 @@ class TenantOut(BaseModel):
     created_at:              Optional[datetime] = None
 
     # Computed from arrears service
-    total_paid:    Optional[Decimal] = None
-    total_owed:    Optional[Decimal] = None
-    balance:       Optional[Decimal] = None
-    months_behind: Optional[int]     = None
+    total_paid:        Optional[Decimal] = None
+    total_owed:        Optional[Decimal] = None
+    balance:           Optional[Decimal] = None
+    balance_due:       Optional[Decimal] = None
+    months_behind:     Optional[int] = None
+    months_in_arrears: Optional[int] = None
 
     # Related names
     unit_number:   Optional[str] = None
     property_name: Optional[str] = None
+    property_id:   Optional[int] = None
 
     model_config = {"from_attributes": True}

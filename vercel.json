@@ -16,7 +16,8 @@
     }
   ],
   "env": {
-    "SKIP_STARTUP_MIGRATIONS": "true",
+    "DATABASE_SCHEMA": "public",
+    "SKIP_STARTUP_MIGRATIONS": "false",
     "ENVIRONMENT": "production"
   }
 }

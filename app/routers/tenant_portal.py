@@ -15,12 +15,27 @@ from app.models.tenant import Tenant
 from app.models.property import Property, Unit
 from app.models.payment import Payment
 from app.schemas.payment import PaymentOut
-from app.schemas.tenant import TenantOut
+from app.schemas.tenant import TenantOut, TenantSelfUpdate
 from app.services.email_service import send_email
 from app.services.auth_service import auth_service
 from app.utils.response import success_response, error_response
 
 router = APIRouter(prefix="/tenant", tags=["Tenant Portal"])
+
+
+def _tenant_self_dict(tenant: Tenant) -> dict:
+    status = tenant.status.value if hasattr(tenant.status, "value") else str(tenant.status)
+    return {
+        "id": tenant.id,
+        "full_name": tenant.full_name,
+        "phone": tenant.phone,
+        "email": tenant.email,
+        "national_id": tenant.national_id,
+        "emergency_contact_name": tenant.emergency_contact_name,
+        "emergency_contact_phone": tenant.emergency_contact_phone,
+        "status": status,
+        "unit_id": tenant.unit_id,
+    }
 
 
 @router.get("/me")
@@ -32,7 +47,35 @@ def get_my_tenant_profile(
     tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
     if not tenant:
         raise error_response("Tenant profile not found. Contact your landlord.", status_code=404)
-    return success_response(data=tenant)
+    return success_response(data=_tenant_self_dict(tenant))
+
+
+@router.patch("/me")
+def update_my_tenant_profile(
+    payload: TenantSelfUpdate,
+    current_user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Update contact details on the tenant's rental record (syncs phone to user account)."""
+    tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    if not tenant:
+        raise error_response("Tenant profile not found. Contact your landlord.", status_code=404)
+
+    data = payload.model_dump(exclude_none=True)
+    for key, value in data.items():
+        if isinstance(value, str):
+            value = value.strip() or None
+        setattr(tenant, key, value)
+
+    if "phone" in data and data["phone"]:
+        current_user.phone = tenant.phone
+    if tenant.full_name:
+        current_user.full_name = tenant.full_name
+
+    db.commit()
+    db.refresh(tenant)
+    db.refresh(current_user)
+    return success_response(data=_tenant_self_dict(tenant), message="Tenant profile updated")
 
 
 @router.get("/my-payments")

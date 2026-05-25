@@ -35,7 +35,7 @@ def _unit_belongs_to_owner(db: Session, unit_id: int, owner_id: int) -> Unit:
 
 def _enrich(req: MaintenanceRequest) -> dict:
     unit = req.unit if hasattr(req, "unit") and req.unit else None
-    prop = unit.property if unit and hasattr(unit, "property") else None
+    prop = unit.parent_property if unit and hasattr(unit, "parent_property") else None
     return {
         "id": req.id,
         "unit_id": req.unit_id,
@@ -59,7 +59,7 @@ def _enrich(req: MaintenanceRequest) -> dict:
 def _load(db: Session, request_id: int, owner_id: int) -> MaintenanceRequest:
     req = (
         db.query(MaintenanceRequest)
-        .options(joinedload(MaintenanceRequest.unit).joinedload(Unit.property))
+        .options(joinedload(MaintenanceRequest.unit).joinedload(Unit.parent_property))
         .join(Unit, MaintenanceRequest.unit_id == Unit.id)
         .join(Property, Unit.property_id == Property.id)
         .filter(MaintenanceRequest.id == request_id, Property.owner_id == owner_id)
@@ -79,7 +79,7 @@ def list_requests(
 ) -> list:
     q = (
         db.query(MaintenanceRequest)
-        .options(joinedload(MaintenanceRequest.unit).joinedload(Unit.property))
+        .options(joinedload(MaintenanceRequest.unit).joinedload(Unit.parent_property))
         .join(Unit, MaintenanceRequest.unit_id == Unit.id)
         .join(Property, Unit.property_id == Property.id)
         .filter(Property.owner_id == owner_id)

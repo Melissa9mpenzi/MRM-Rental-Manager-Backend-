@@ -16,6 +16,15 @@ from app.utils.response import success_response, error_response
 
 router = APIRouter(tags=["Properties & Units"])
 
+
+def _summary(prop) -> PropertySummary:
+    return PropertySummary.model_validate(prop)
+
+
+def _detail(prop) -> PropertyOut:
+    return PropertyOut.model_validate(prop)
+
+
 @router.get("/properties")
 def list_properties(
     search: str = Query(""),
@@ -25,7 +34,7 @@ def list_properties(
 ):
     """List all properties for current user with standardized response"""
     props = property_service.get_all_properties(db, current_user.id, search, include_archived)
-    return success_response(data=props)
+    return success_response(data=[_summary(p) for p in props])
 
 @router.post("/properties", status_code=status.HTTP_201_CREATED)
 def create_property(
@@ -35,7 +44,7 @@ def create_property(
 ):
     """Create new property with standardized response"""
     prop = property_service.create_property(db, data, current_user.id)
-    return success_response(data=prop, message="Property created successfully")
+    return success_response(data=_detail(prop), message="Property created successfully")
 
 @router.get("/properties/{property_id}")
 def get_property(
@@ -45,7 +54,7 @@ def get_property(
 ):
     """Get single property with standardized response"""
     prop = property_service.get_property(db, property_id, current_user.id)
-    return success_response(data=prop)
+    return success_response(data=_detail(prop))
 
 @router.patch("/properties/{property_id}")
 def update_property(
@@ -56,7 +65,7 @@ def update_property(
 ):
     """Update property with standardized response"""
     prop = property_service.update_property(db, property_id, data, current_user.id)
-    return success_response(data=prop, message="Property updated successfully")
+    return success_response(data=_detail(prop), message="Property updated successfully")
 
 @router.post("/properties/{property_id}/photo")
 async def upload_property_photo(
@@ -78,7 +87,50 @@ async def upload_property_photo(
         shutil.copyfileobj(file.file, buf)
     photo_url = f"/uploads/properties/{filename}"
     prop = property_service.set_property_photo(db, property_id, photo_url, current_user.id)
-    return success_response(data=prop, message="Property photo updated successfully")
+    return success_response(data=_detail(prop), message="Property photo updated successfully")
+
+
+PROPERTY_VIDEO_TYPES = {
+    "video/mp4",
+    "video/webm",
+    "video/quicktime",
+    "video/x-msvideo",
+}
+PROPERTY_VIDEO_MAX_BYTES = 50 * 1024 * 1024
+
+
+@router.post("/properties/{property_id}/video")
+async def upload_property_video(
+    property_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Optional property tour video (MP4, WebM, MOV). Max 50MB."""
+    content_type = (file.content_type or "").lower()
+    ext = file.filename.rsplit(".", 1)[-1].lower() if file.filename and "." in file.filename else "mp4"
+    allowed_ext = {"mp4", "webm", "mov", "avi"}
+    if content_type not in PROPERTY_VIDEO_TYPES and ext not in allowed_ext:
+        raise HTTPException(
+            status_code=400,
+            detail="Only MP4, WebM, or MOV videos are allowed.",
+        )
+    content = await file.read()
+    if len(content) > PROPERTY_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="Video too large (max 50MB).")
+    if ext not in allowed_ext:
+        ext = "mp4"
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    from app.runtime import upload_root
+
+    save_dir = os.path.join(upload_root(), "properties", "videos")
+    os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, filename), "wb") as buf:
+        buf.write(content)
+    video_url = f"/uploads/properties/videos/{filename}"
+    prop = property_service.set_property_video(db, property_id, video_url, current_user.id)
+    return success_response(data=_detail(prop), message="Property video uploaded successfully")
+
 
 @router.post("/properties/{property_id}/archive")
 def archive_property(
@@ -87,7 +139,7 @@ def archive_property(
     current_user: User = Depends(get_current_user),
 ):
     prop = property_service.archive_property(db, property_id, current_user.id)
-    return success_response(data=prop, message="Property archived successfully")
+    return success_response(data=_summary(prop), message="Property archived successfully")
 
 @router.post("/properties/{property_id}/restore")
 def restore_property(
@@ -96,7 +148,33 @@ def restore_property(
     current_user: User = Depends(get_current_user),
 ):
     prop = property_service.restore_property(db, property_id, current_user.id)
-    return success_response(data=prop, message="Property restored successfully")
+    return success_response(data=_summary(prop), message="Property restored successfully")
+
+
+def _delete_property_handler(property_id: int, db: Session, current_user: User):
+    """Permanently delete a property and all its units (not reversible)."""
+    property_service.delete_property(db, property_id, current_user.id)
+    return success_response(message="Property deleted permanently")
+
+
+@router.delete("/properties/{property_id}")
+def delete_property(
+    property_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return _delete_property_handler(property_id, db, current_user)
+
+
+@router.post("/properties/{property_id}/delete")
+def delete_property_post(
+    property_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """POST alias for hosts or proxies that block DELETE."""
+    return _delete_property_handler(property_id, db, current_user)
+
 
 @router.get("/properties/{property_id}/units")
 def list_units(

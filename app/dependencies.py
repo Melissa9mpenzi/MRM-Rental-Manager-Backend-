@@ -78,10 +78,10 @@ def require_landlord(current_user: User = Depends(get_current_user)) -> User:
     Dependency for landlord-only routes.
     Usage: current_user: User = Depends(require_landlord)
     """
-    if current_user.role != "landlord":
+    if _role_str(current_user) != UserRole.landlord.value:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Landlord access required."
+            detail="Landlord access required.",
         )
     return current_user
 

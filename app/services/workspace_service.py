@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
+from fastapi import HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -14,6 +15,7 @@ from app.models.tenant import Tenant, TenantStatus
 from app.models.payment import Payment, PaymentType
 from app.models.maintenance import MaintenanceRequest
 from app.models.audit import AuditLog
+from app.models.lease import Lease
 
 
 def _role_value(role) -> str:
@@ -143,6 +145,9 @@ def platform_live_activity(db: Session) -> dict[str, Any]:
 
 
 def admin_summary(db: Session) -> dict[str, Any]:
+    from app.services.platform_data_service import live_data_summary
+
+    live = live_data_summary(db)
     users_total = db.query(func.count(User.id)).scalar() or 0
 
     by_role_rows = db.query(User.role, func.count(User.id)).group_by(User.role).all()
@@ -221,6 +226,12 @@ def admin_summary(db: Session) -> dict[str, Any]:
         )
         if vol is None:
             vol = Decimal("0")
+        new_leases = (
+            db.query(func.count(Lease.id))
+            .filter(Lease.created_at >= start_dt, Lease.created_at < end_dt)
+            .scalar()
+            or 0
+        )
         monthly_platform.append(
             {
                 "month": MONTHS[m - 1],
@@ -228,6 +239,7 @@ def admin_summary(db: Session) -> dict[str, Any]:
                 "users": int(new_users),
                 "properties": int(new_props),
                 "payment_volume": float(vol),
+                "leases": int(new_leases),
             }
         )
 
@@ -298,6 +310,8 @@ def admin_summary(db: Session) -> dict[str, Any]:
             )
 
     return {
+        "data_source": "database",
+        "live_data": live,
         "users_total": int(users_total),
         "users_by_role": users_by_role,
         "properties_total": int(properties_total),
@@ -314,7 +328,9 @@ def admin_summary(db: Session) -> dict[str, Any]:
     }
 
 
-def staff_summary(db: Session) -> dict[str, Any]:
+def staff_summary(db: Session, owner_id: int | None = None) -> dict[str, Any]:
+    from app.services import agent_crm_service
+
     maintenance_open = (
         db.query(func.count(MaintenanceRequest.id)).filter(MaintenanceRequest.status == "open").scalar()
         or 0
@@ -332,24 +348,36 @@ def staff_summary(db: Session) -> dict[str, Any]:
 
     properties_listed = db.query(func.count(Property.id)).filter(Property.is_active == True).scalar() or 0
 
-    pipeline_stages = [
-        {"stage": "New leads", "count": 0},
-        {"stage": "Contacted", "count": 0},
-        {"stage": "Viewing", "count": 0},
-        {"stage": "Negotiating", "count": 0},
-        {"stage": "Closed", "count": 0},
-    ]
-
-    today = date.today()
-    commission_trend = []
-    MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    for i in range(5, -1, -1):
-        m = today.month - i
-        y = today.year
-        while m <= 0:
-            m += 12
-            y -= 1
-        commission_trend.append({"m": MONTHS[m - 1], "v": 0.0})
+    if owner_id:
+        pipeline_stages = agent_crm_service.pipeline_counts(db, owner_id)
+        recent_leads = agent_crm_service.recent_leads_for_dashboard(db, owner_id)
+        commission_trend = agent_crm_service.commission_trend(db, owner_id)
+        kpis = agent_crm_service.staff_kpis(db, owner_id)
+    else:
+        pipeline_stages = [
+            {"stage": "New leads", "count": 0},
+            {"stage": "Contacted", "count": 0},
+            {"stage": "Viewing", "count": 0},
+            {"stage": "Negotiating", "count": 0},
+            {"stage": "Closed", "count": 0},
+        ]
+        recent_leads = []
+        today = date.today()
+        MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        commission_trend = []
+        for i in range(5, -1, -1):
+            m = today.month - i
+            y = today.year
+            while m <= 0:
+                m += 12
+                y -= 1
+            commission_trend.append({"m": MONTHS[m - 1], "v": 0.0})
+        kpis = {
+            "total_leads": 0,
+            "active_deals": int(maintenance_open) + int(maintenance_in_progress),
+            "commissions_ytd_ugx": 0.0,
+            "pending_payout_ugx": 0.0,
+        }
 
     return {
         "maintenance": {
@@ -359,14 +387,9 @@ def staff_summary(db: Session) -> dict[str, Any]:
         },
         "properties_listed": int(properties_listed),
         "pipeline_stages": pipeline_stages,
-        "recent_leads": [],
+        "recent_leads": recent_leads,
         "commission_trend": commission_trend,
-        "kpis": {
-            "total_leads": 0,
-            "active_deals": int(maintenance_open) + int(maintenance_in_progress),
-            "commissions_ytd_ugx": 0.0,
-            "pending_payout_ugx": 0.0,
-        },
+        "kpis": kpis,
     }
 
 
@@ -401,11 +424,99 @@ def admin_list_users(
             "kyc_submitted_at": u.kyc_submitted_at.isoformat() if u.kyc_submitted_at else None,
             "kyc_review_status": getattr(u, "kyc_review_status", "none") or "none",
             "trusted_for_commerce": bool(getattr(u, "trusted_for_commerce", True)),
+            "gov_suspended": bool(getattr(u, "gov_suspended", False)),
             "created_at": u.created_at.isoformat() if u.created_at else None,
         }
         for u in rows
     ]
     return items, total
+
+
+def admin_user_account_action(
+    db: Session,
+    *,
+    actor_id: int,
+    target_user_id: int,
+    action: str,
+) -> dict[str, Any]:
+    """
+    System admin account controls: disconnect (deactivate + revoke sessions) or reconnect.
+    """
+    from app.services.audit_service import log_action
+
+    user = db.query(User).filter(User.id == target_user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    act = (action or "").strip().lower()
+    if act not in ("disconnect", "reconnect"):
+        raise HTTPException(status_code=400, detail="action must be disconnect or reconnect.")
+
+    if target_user_id == actor_id:
+        raise HTTPException(status_code=400, detail="You cannot disconnect or reconnect your own account.")
+
+    role = _role_value(user.role)
+    if role == UserRole.system_admin.value:
+        active_admins = (
+            db.query(func.count(User.id))
+            .filter(User.role == UserRole.system_admin, User.is_active == True)  # noqa: E712
+            .scalar()
+            or 0
+        )
+        if act == "disconnect" and active_admins <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot disconnect the last active system administrator.",
+            )
+
+    was_active = bool(user.is_active)
+    if act == "disconnect":
+        if not was_active:
+            return {
+                "id": user.id,
+                "is_active": False,
+                "message": "Account is already disconnected.",
+            }
+        user.is_active = False
+        user.refresh_token = None
+        user.trusted_for_commerce = False
+        message = f"Disconnected {user.email} — they can no longer sign in."
+        audit_action = "admin_disconnect_user"
+    else:
+        if was_active:
+            return {
+                "id": user.id,
+                "is_active": True,
+                "message": "Account is already active.",
+            }
+        user.is_active = True
+        user.gov_suspended = False
+        user.gov_suspension_reason = None
+        user.gov_suspended_at = None
+        message = f"Reconnected {user.email} — they can sign in again."
+        audit_action = "admin_reconnect_user"
+
+    db.commit()
+    db.refresh(user)
+
+    log_action(
+        db,
+        user_id=actor_id,
+        action=audit_action,
+        table_name="users",
+        record_id=user.id,
+        old_value={"is_active": was_active},
+        new_value={"is_active": user.is_active, "email": user.email, "role": role},
+    )
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": role,
+        "is_active": user.is_active,
+        "message": message,
+    }
 
 
 def admin_list_properties(
