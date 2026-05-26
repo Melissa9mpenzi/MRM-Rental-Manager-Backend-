@@ -39,20 +39,43 @@ def _qr_image(verify_url: str):
     return Image(buf, width=3.2 * cm, height=3.2 * cm)
 
 
+def build_receipt_pdf_bytes(
+    receipt: dict[str, Any],
+    *,
+    verify_url: str,
+) -> bytes:
+    """Generate enterprise PDF in memory (works on Vercel serverless)."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    _build_receipt_pdf_story(doc, receipt, verify_url=verify_url)
+    return buffer.getvalue()
+
+
 def build_receipt_pdf(
     receipt: dict[str, Any],
     *,
     verify_url: str,
     upload_dir: str,
 ) -> str:
-    """Generate enterprise PDF and return web path /uploads/receipts/..."""
+    """Generate enterprise PDF on disk and return web path /uploads/receipts/..."""
     receipts_dir = os.path.join(upload_dir, "receipts", "enterprise")
     os.makedirs(receipts_dir, exist_ok=True)
     safe_num = receipt["receipt_number"].replace("/", "-")
     filename = f"{safe_num}.pdf"
     filepath = os.path.join(receipts_dir, filename)
 
-    doc = SimpleDocTemplate(filepath, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    content = build_receipt_pdf_bytes(receipt, verify_url=verify_url)
+    with open(filepath, "wb") as f:
+        f.write(content)
+    return f"/uploads/receipts/enterprise/{filename}"
+
+
+def _build_receipt_pdf_story(
+    doc: SimpleDocTemplate,
+    receipt: dict[str, Any],
+    *,
+    verify_url: str,
+) -> None:
     styles = getSampleStyleSheet()
     navy = colors.HexColor("#0c1219")
     teal = colors.HexColor("#00a376")
@@ -187,7 +210,6 @@ def build_receipt_pdf(
     )
 
     doc.build(story)
-    return f"/uploads/receipts/enterprise/{filename}"
 
 
 def _kv_table(rows: list[list[str]]) -> Table:
