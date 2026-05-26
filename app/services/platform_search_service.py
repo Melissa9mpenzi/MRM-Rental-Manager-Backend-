@@ -121,11 +121,7 @@ def global_search(db: Session, user: User, *, q: str, limit: int = 12) -> dict[s
     if role in (UserRole.landlord.value, UserRole.system_admin.value):
         pay_q = db.query(Payment).filter(Payment.is_deleted.is_(False))
         if role == UserRole.landlord.value:
-            prop_ids = [p.id for p in db.query(Property.id).filter(Property.owner_id == user.id).all()]
-            if prop_ids:
-                pay_q = pay_q.filter(Payment.property_id.in_(prop_ids))
-            else:
-                pay_q = pay_q.filter(False)
+            pay_q = pay_q.filter(Payment.owner_id == user.id)
         pays = (
             pay_q.filter(or_(Payment.reference.ilike(like), Payment.notes.ilike(like)))
             .order_by(Payment.payment_date.desc())

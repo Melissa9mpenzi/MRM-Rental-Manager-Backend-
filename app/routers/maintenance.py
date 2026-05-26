@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, 
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_landlord, _role_str
 from app.models.user import User
 from app.services import maintenance_service
 from app.runtime import upload_root
@@ -27,19 +27,23 @@ def list_requests(
     current_user: User         = Depends(get_current_user),
 ):
     """List maintenance requests. Admin/Staff see all for their properties. Tenants see only requests they reported."""
-    if current_user.role == "tenant":
+    if _role_str(current_user) == "tenant":
         from app.models.maintenance import MaintenanceRequest
         q = db.query(MaintenanceRequest).filter(MaintenanceRequest.reported_by == current_user.id)
         if status:
             q = q.filter(MaintenanceRequest.status == status)
         if unit_id:
             q = q.filter(MaintenanceRequest.unit_id == unit_id)
-        requests = q.order_by(MaintenanceRequest.created_at.desc()).all()
-        return success_response(data=requests)
-    
+        rows = q.order_by(MaintenanceRequest.created_at.desc()).all()
+        return success_response(data=[maintenance_service._enrich(r) for r in rows])
+
+    require_landlord(current_user)
     requests = maintenance_service.list_requests(
-        db, current_user.id,
-        status=status, unit_id=unit_id, property_id=property_id,
+        db,
+        current_user.id,
+        status=status,
+        unit_id=unit_id,
+        property_id=property_id,
     )
     return success_response(data=requests)
 
@@ -57,15 +61,14 @@ def get_request(
         raise error_response("Request not found.", status_code=404)
     
     # Tenant can only view their own requests
-    if current_user.role == "tenant" and req.reported_by != current_user.id:
-        raise error_response("Access denied.", status_code=403)
-    
-    # Staff/Admin/landlord check via service
-    if current_user.role != "tenant":
-        result = maintenance_service.get_request(db, request_id, current_user.id)
-        return success_response(data=result)
-    
-    return success_response(data=req)
+    if _role_str(current_user) == "tenant":
+        if req.reported_by != current_user.id:
+            raise error_response("Access denied.", status_code=403)
+        return success_response(data=maintenance_service._enrich(req))
+
+    require_landlord(current_user)
+    result = maintenance_service.get_request(db, request_id, current_user.id)
+    return success_response(data=result)
 
 
 @router.post("", status_code=201, summary="Create a maintenance request")
@@ -83,7 +86,7 @@ async def create_request(
     from app.models.lease import Lease, LeaseStatus
     
     # Determine owner_id and verify permissions
-    if current_user.role == "tenant":
+    if _role_str(current_user) == "tenant":
         # Tenant must be linked to this unit via active lease
         tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
         if not tenant:
@@ -100,7 +103,7 @@ async def create_request(
         owner_id = lease.owner_id
         reported_by = current_user.id
     else:
-        # Admin/Staff/Landlord - use their own ID
+        require_landlord(current_user)
         owner_id = current_user.id
         reported_by = current_user.id
     
@@ -131,6 +134,7 @@ def update_request(
     current_user:    User          = Depends(get_current_user),
 ):
     """Update maintenance request with standardized response"""
+    require_landlord(current_user)
     result = maintenance_service.update_request(
         db=db,
         request_id=request_id,
@@ -152,5 +156,6 @@ def delete_request(
     current_user: User    = Depends(get_current_user),
 ):
     """Delete maintenance request with standardized response"""
+    require_landlord(current_user)
     maintenance_service.delete_request(db, request_id, current_user.id)
     return success_response(message="Maintenance request deleted successfully")

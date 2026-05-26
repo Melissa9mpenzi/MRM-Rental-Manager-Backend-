@@ -14,6 +14,8 @@ class BlockchainWallet(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     sui_address = Column(String(80), nullable=False, index=True)
     wallet_name = Column(String(64), nullable=True)
+    # platform = auto-provisioned with email account; external = optional browser wallet link
+    wallet_source = Column(String(16), nullable=False, default="platform")
     is_primary = Column(Boolean, default=True, nullable=False)
     linked_at = Column(DateTime, default=func.now(), server_default=func.now())
 

@@ -43,9 +43,9 @@ class Settings(BaseSettings):
     # Example: postgresql+psycopg2://USER:PASSWORD@ep-xxx.region.aws.neon.tech/neondb?sslmode=require
     database_url: str = "postgresql+psycopg2://user:password@localhost:5432/rental_manager_db?sslmode=require"
 
-    # Postgres: schema for ORM tables (avoids clashing with Neon Auth public.users, etc.).
-    # Set to "public" only on a database where you control all public.* tables.
-    database_schema: str = "rental_mgr"
+    # Postgres: schema for ORM tables. Production Neon uses "public" (see .env.example).
+    # Use "rental_mgr" only when you created tables in that schema via init_db.
+    database_schema: str = "public"
 
     # JWT
     secret_key: str = "change-me-in-production-use-long-random-string"
@@ -81,6 +81,10 @@ class Settings(BaseSettings):
 
     # Firebase Admin — path to service account JSON (optional). Used by POST /auth/firebase.
     firebase_credentials_path: str = ""
+
+    # Privy — social login (Google/Apple/email) + embedded Sui wallets. https://www.privy.io/
+    privy_app_id: str = ""
+    privy_app_secret: str = ""
 
     # Payment gateway (Uganda): mtn_momo | pesapal | flutterwave | mock
     payment_gateway_provider: str = "mtn_momo"
@@ -139,9 +143,16 @@ class Settings(BaseSettings):
             url = "postgresql+psycopg2://" + url[len("postgres://") :]
         elif url.startswith("postgresql://") and "+psycopg2" not in url:
             url = "postgresql+psycopg2://" + url[len("postgresql://") :]
+        # Neon UI often adds channel_binding=require; it breaks many Vercel/Linux psycopg2 builds.
+        url = url.replace("channel_binding=require", "").replace("channel_binding=prefer", "")
+        url = url.replace("&&", "&").replace("?&", "?").rstrip("?&")
         return url
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+
+    @property
+    def is_production(self) -> bool:
+        return (self.environment or "").strip().lower() == "production"
 
 
 settings = Settings()

@@ -1,7 +1,7 @@
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 
@@ -16,6 +16,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     VerifyEmailTokenBody,
     FirebaseSignInBody,
+    PrivySignInBody,
 )
 from app.services.auth_service import auth_service
 from app.services.email_service import (
@@ -71,9 +72,20 @@ def _clear_email_verification_fields(user: User) -> None:
     user.verification_otp_expiry = None
 
 
-def _user_auth_payload(user: User) -> dict:
+def _user_auth_payload(user: User, db: Session | None = None) -> dict:
     """JWT companion profile returned on login / me / firebase."""
-    return UserOut.model_validate(user).model_dump()
+    from app.services.blockchain import blockchain_service
+
+    payload = UserOut.model_validate(user).model_dump()
+    if db is not None:
+        try:
+            wallet = blockchain_service.ensure_platform_wallet(db, user, request_faucet=False)
+            payload["sui_address"] = wallet.get("sui_address")
+            payload["sui_wallet_auto"] = bool(wallet.get("auto_provisioned"))
+        except Exception:  # noqa: BLE001
+            payload["sui_address"] = None
+            payload["sui_wallet_auto"] = False
+    return payload
 
 
 def _apply_trust_after_email_verify(user: User) -> None:
@@ -92,7 +104,7 @@ def _send_registration_email(
     full_name: str,
     token: str,
     otp: str,
-) -> None:
+) -> bool:
     sent = send_registration_verification_link(
         email,
         full_name,
@@ -101,13 +113,52 @@ def _send_registration_email(
         otp=otp,
     )
     if not sent:
-        print(f"[WARN] Could not send verification email to {email}. Token: {token}  OTP: {otp}")
+        print(
+            f"\n[WARN] Verification email was NOT sent (configure SMTP_* on the API host).\n"
+            f"       Email: {email}\n"
+            f"       Code (valid 15 min): {otp}\n"
+        )
+    return sent
+
+
+def _issue_verification_codes(user, db: Session) -> tuple[str, str]:
+    """Refresh link token + 6-digit OTP (15 minutes)."""
+    token = generate_verification_token()
+    otp = generate_otp()
+    expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
+    user.verification_token = token
+    user.verification_token_expiry = expiry
+    user.verification_otp = otp
+    user.verification_otp_expiry = expiry
+    db.commit()
+    db.refresh(user)
+    return token, otp
+
+
+def _registration_response_body(user, otp: str, email_sent: bool) -> dict:
+    body = {
+        "message": (
+            "Account created. Check your email for a 6-digit code."
+            if email_sent
+            else "Account created. We could not send email — use Resend code or the one-time code shown below."
+        ),
+        "email": user.email,
+        "email_sent": email_sent,
+    }
+    if not email_sent:
+        body["verification_otp_fallback"] = otp
+    elif settings.environment == "development":
+        body["dev_verification_otp"] = otp
+    return body
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 @router.post("/register", status_code=201)
 def register(
     payload: UserRegister,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
     if payload.role in (
@@ -132,20 +183,40 @@ def register(
         db, payload, verification_token=token, token_expiry=expiry, verification_otp=otp
     )
 
-    background_tasks.add_task(
-        _send_registration_email,
-        user.email,
-        user.full_name,
-        token,
-        otp,
-    )
+    email_sent = _send_registration_email(user.email, user.full_name, token, otp)
+    return _registration_response_body(user, otp, email_sent)
 
+
+@router.post("/resend-verification")
+def resend_verification(payload: ResendVerificationRequest, db: Session = Depends(get_db)):
+    """Send a fresh 6-digit code (agent, landlord, tenant signup)."""
+    user = db.query(User).filter(User.email == str(payload.email)).first()
+    if not user:
+        return {
+            "message": "If that email is registered and not yet verified, a new code has been sent.",
+            "email_sent": None,
+        }
+    if user.email_verified:
+        return {
+            "message": "This email is already verified. You can sign in.",
+            "email_verified": True,
+            "email_sent": True,
+        }
+
+    token, otp = _issue_verification_codes(user, db)
+    email_sent = _send_registration_email(user.email, user.full_name, token, otp)
     body = {
-        "message": "Account created. Check your email for a 6-digit code and verification link.",
+        "message": (
+            "A new verification code was sent to your inbox."
+            if email_sent
+            else "Email could not be sent. Use the one-time code below or configure SMTP on the server."
+        ),
         "email": user.email,
-        "email_sent": None,
+        "email_sent": email_sent,
     }
-    if settings.environment == "development":
+    if not email_sent:
+        body["verification_otp_fallback"] = otp
+    elif settings.environment == "development":
         body["dev_verification_otp"] = otp
     return body
 
@@ -190,7 +261,10 @@ def verify_email_token(payload: VerifyEmailTokenBody, db: Session = Depends(get_
     if not _email_verification_secret_accepted(user, payload.token, now):
         exp = _expiry_utc(user.verification_token_expiry) or _expiry_utc(user.verification_otp_expiry)
         if (user.verification_token or user.verification_otp) and exp and now > exp:
-            raise error_response("Verification code has expired. Register again or request a new email.", status_code=400)
+            raise error_response(
+                "Verification code has expired. Use Resend code on the verify page or register again.",
+                status_code=400,
+            )
         raise error_response("Invalid verification code or link token.", status_code=400)
     user.email_verified = True
     _clear_email_verification_fields(user)
@@ -213,11 +287,11 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         )
     try:
         user = auth_service.authenticate(db, payload.email, payload.password)
-    except SQLAlchemyError:
-        raise error_response(
-            "Could not reach the database. Check DATABASE_URL on Vercel and that Neon allows connections.",
-            status_code=503,
-        )
+    except SQLAlchemyError as exc:
+        from app.db_errors import database_error_response
+
+        msg, code = database_error_response(exc)
+        raise error_response(msg, status_code=code)
     if not user:
         raise error_response("Invalid email or password.", status_code=401)
     if is_government_officer(user.role):
@@ -233,17 +307,17 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
 
     try:
         tokens = auth_service.create_tokens(db, user)
-    except SQLAlchemyError:
-        raise error_response(
-            "Could not save session to the database. Check DATABASE_URL on Vercel.",
-            status_code=503,
-        )
+    except SQLAlchemyError as exc:
+        from app.db_errors import database_error_response
+
+        msg, code = database_error_response(exc)
+        raise error_response(msg, status_code=code)
 
     payload_out = {
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
         "token_type": tokens.get("token_type", "bearer"),
-        "user": _user_auth_payload(user),
+        "user": _user_auth_payload(user, db),
         "needs_government_2fa": is_government_officer(user.role),
     }
     return success_response(data=payload_out)
@@ -341,6 +415,122 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     return {"message": "Password reset successfully. You can now log in."}
 
 
+@router.post("/privy", summary="Exchange Privy access token for API JWT (Google / Apple / email)")
+def privy_sign_in(body: PrivySignInBody, db: Session = Depends(get_db)):
+    """
+    Privy social login — can create a new tenant/landlord/agent account on first sign-in.
+    Links Privy embedded Sui wallet when ``sui_address`` is provided.
+    """
+    import secrets
+    from datetime import timedelta
+
+    from app.services import privy_token_service
+    from app.services.blockchain import blockchain_service
+    from app.schemas.auth import UserRegister
+
+    claims = privy_token_service.verify_access_token(body.access_token)
+    if not claims:
+        raise HTTPException(
+            status_code=503,
+            detail="Privy verification failed. Set PRIVY_APP_ID and PRIVY_APP_SECRET on the API.",
+        )
+
+    privy_did = str(claims.get("user_id") or "").strip()
+    if not privy_did:
+        raise error_response("Invalid Privy token.", status_code=400)
+
+    privy_user = privy_token_service.fetch_privy_user(privy_did)
+    profile = privy_token_service.extract_profile_from_privy_user(privy_user) if privy_user else {}
+    email = (profile.get("email") or "").strip().lower()
+    if not email:
+        raise error_response(
+            "Privy account has no email. Enable email collection in the Privy Dashboard for Google/Apple login.",
+            status_code=400,
+        )
+
+    sui_address = (body.sui_address or profile.get("sui_address") or "").strip() or None
+
+    is_new_user = False
+    user = db.query(User).filter(User.privy_did == privy_did).first()
+    if not user:
+        user = db.query(User).filter(User.email == email).first()
+
+    if user:
+        if not user.is_active:
+            raise error_response("Account is disabled. Contact support.", status_code=403)
+        if is_government_officer(user.role) or is_system_admin(user.role):
+            raise error_response(
+                "Government and system administrator accounts cannot use social sign-in.",
+                status_code=403,
+            )
+        user.email_verified = True
+        if not user.privy_did:
+            user.privy_did = privy_did[:128]
+        _apply_trust_after_email_verify(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        role = body.role or UserRole.tenant
+        if role in (
+            UserRole.system_admin,
+            UserRole.gov_nira,
+            UserRole.gov_kcca,
+            UserRole.gov_ura,
+        ) or str(role).startswith("gov_"):
+            raise error_response(
+                "Government and system administrator accounts cannot self-register via social login.",
+                status_code=403,
+            )
+        if db.query(User).filter(User.email == email).first():
+            raise error_response(
+                "An account with this email already exists. Sign in with your password, then link Privy from settings.",
+                status_code=409,
+            )
+
+        token = generate_verification_token()
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
+        payload = UserRegister(
+            email=email,
+            full_name=profile.get("full_name") or email.split("@")[0],
+            phone="",
+            password=secrets.token_urlsafe(32),
+            role=role,
+        )
+        user = auth_service.create_user(
+            db,
+            payload,
+            verification_token=token,
+            token_expiry=expiry,
+        )
+        user.email_verified = True
+        user.privy_did = privy_did[:128]
+        _apply_trust_after_email_verify(user)
+        db.commit()
+        db.refresh(user)
+        is_new_user = True
+
+    if sui_address:
+        try:
+            blockchain_service.link_privy_wallet(db, user, sui_address)
+        except Exception:  # noqa: BLE001
+            blockchain_service.ensure_platform_wallet(db, user, request_faucet=False)
+    else:
+        blockchain_service.ensure_platform_wallet(db, user, request_faucet=False)
+
+    tokens = auth_service.create_tokens(db, user)
+    return success_response(
+        data={
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": tokens.get("token_type", "bearer"),
+            "user": _user_auth_payload(user, db),
+            "needs_government_2fa": is_government_officer(user.role),
+            "is_new_user": is_new_user,
+        },
+        message="Signed in with Privy.",
+    )
+
+
 @router.post("/firebase", summary="Exchange Firebase ID token for API JWT (optional)")
 def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
     claims = verify_firebase_id_token(body.id_token)
@@ -383,7 +573,7 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "token_type": tokens.get("token_type", "bearer"),
-            "user": _user_auth_payload(user),
+            "user": _user_auth_payload(user, db),
             "needs_government_2fa": is_government_officer(user.role),
         }
     )
@@ -391,5 +581,8 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
 
 # ── ME ────────────────────────────────────────────────────────────
 @router.get("/me")
-def me(current_user: User = Depends(get_current_user)):
-    return success_response(data=_user_auth_payload(current_user))
+def me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return success_response(data=_user_auth_payload(current_user, db))

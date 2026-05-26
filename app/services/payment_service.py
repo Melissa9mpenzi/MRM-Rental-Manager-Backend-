@@ -29,6 +29,9 @@ def _enrich(p: Payment) -> dict:
     raw["tenant_name"] = tenant.full_name if tenant else None
     raw["unit_number"] = unit.unit_number if unit else None
     raw["property_name"] = prop.name if prop else None
+    pd = raw.get("payment_date")
+    if pd is not None and hasattr(pd, "isoformat"):
+        raw["payment_date"] = pd.isoformat()
     return raw
 
 
@@ -197,11 +200,25 @@ def delete_payment(db: Session, payment_id: int, owner_id: int):
     db.commit()
 
 
-def wallet_summary_for_user(db: Session, user: User) -> dict:
-    """Aggregate rent payments visible to this user (tenant: own payments; owner: collected; admin: platform-wide)."""
-    q = db.query(Payment).filter(Payment.is_deleted == False)
+def _role_value(user: User) -> str:
+    return user.role.value if hasattr(user.role, "value") else str(user.role)
 
-    if user.role == UserRole.tenant:
+
+def wallet_summary_for_user(db: Session, user: User) -> dict:
+    """Aggregate rent payments visible to this user (tenant: own payments; landlord: collected; admin: platform-wide)."""
+    from app.models.property import Property, Unit, UnitStatus
+    from app.models.escrow_hold import EscrowHold, EscrowStatus
+    from app.services.arrears_service import get_arrears_list
+
+    today = date.today()
+    q = (
+        db.query(Payment)
+        .filter(Payment.is_deleted == False, Payment.payment_type == PaymentType.rent)
+        .options(joinedload(Payment.tenant).joinedload(Tenant.unit).joinedload(Unit.parent_property))
+    )
+
+    role = _role_value(user)
+    if role == UserRole.tenant.value:
         tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
         if not tenant:
             return {
@@ -212,26 +229,87 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
             }
         q = q.filter(Payment.tenant_id == tenant.id)
         scope = "tenant"
-    elif user.role == UserRole.system_admin:
+    elif role == UserRole.system_admin.value:
         scope = "platform"
     else:
         q = q.filter(Payment.owner_id == user.id)
-        scope = "owner"
+        scope = "landlord"
 
-    rows = q.all()
+    rows = q.order_by(Payment.payment_date.desc(), Payment.id.desc()).all()
     total = sum(float(p.amount) for p in rows)
     by_method: dict[str, float] = {}
+    by_method_online = 0.0
+    by_method_manual = 0.0
+    manual_keys = {PaymentMethod.cash.value, PaymentMethod.bank.value, "other"}
     for p in rows:
         pm = p.payment_method
         key = pm.value if hasattr(pm, "value") else str(pm)
-        by_method[key] = by_method.get(key, 0.0) + float(p.amount)
+        amt = float(p.amount)
+        by_method[key] = by_method.get(key, 0.0) + amt
+        if key in manual_keys:
+            by_method_manual += amt
+        else:
+            by_method_online += amt
 
-    return {
+    this_month = sum(
+        float(p.amount)
+        for p in rows
+        if p.period_month == today.month and p.period_year == today.year
+    )
+
+    payload: dict = {
         "total_paid_ugx": round(total, 2),
+        "total_collected_ugx": round(total, 2),
+        "this_month_collected_ugx": round(this_month, 2),
         "payment_count": len(rows),
         "by_method": by_method,
+        "by_method_online_ugx": round(by_method_online, 2),
+        "by_method_manual_ugx": round(by_method_manual, 2),
         "scope": scope,
+        "recent_payments": [_enrich(p) for p in rows[:12]],
     }
+
+    if scope == "landlord":
+        arrears = get_arrears_list(db, user.id)
+        outstanding = sum(float(a.get("balance_due") or 0) for a in arrears if float(a.get("balance_due") or 0) > 0)
+        properties = (
+            db.query(Property)
+            .options(joinedload(Property.units))
+            .filter(Property.owner_id == user.id, Property.is_active == True)
+            .all()
+        )
+        all_units = [u for p in properties for u in p.units]
+        expected_monthly = sum(
+            float(u.rent_amount) for u in all_units if u.status == UnitStatus.occupied
+        )
+        active_escrow = (
+            db.query(EscrowHold)
+            .filter(
+                EscrowHold.owner_id == user.id,
+                EscrowHold.status.in_(
+                    [EscrowStatus.pending, EscrowStatus.funded, EscrowStatus.held]
+                ),
+            )
+            .all()
+        )
+        escrow_held = sum(float(h.amount_ugx or 0) for h in active_escrow)
+        payload.update(
+            {
+                "available_ugx": round(total, 2),
+                "outstanding_rent_ugx": round(outstanding, 2),
+                "expected_monthly_rent_ugx": round(expected_monthly, 2),
+                "tenants_in_arrears": sum(
+                    1 for a in arrears if float(a.get("balance_due") or 0) > 0
+                ),
+                "escrow_held_ugx": round(escrow_held, 2),
+                "escrow_active_count": len(active_escrow),
+                "collection_rate_pct": round(this_month / expected_monthly * 100, 1)
+                if expected_monthly > 0
+                else 0.0,
+            }
+        )
+
+    return payload
 
 
 # ── PDF RECEIPT ────────────────────────────────────────────────────────────────

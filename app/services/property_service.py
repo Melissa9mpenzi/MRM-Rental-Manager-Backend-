@@ -100,6 +100,43 @@ def restore_property(db: Session, property_id: int, owner_id: int) -> Property:
     return prop
 
 
+def delete_property(db: Session, property_id: int, owner_id: int) -> None:
+    """
+    Permanently remove a property and its units.
+    Blocked when any unit is occupied or an active tenant is assigned.
+    """
+    prop = get_property(db, property_id, owner_id)
+    if any(u.status == UnitStatus.occupied for u in prop.units):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete: one or more units are still occupied. Move tenants out first.",
+        )
+
+    unit_ids = [u.id for u in prop.units]
+    if unit_ids:
+        from app.models.tenant import Tenant, TenantStatus
+
+        active_tenant = (
+            db.query(Tenant)
+            .filter(Tenant.unit_id.in_(unit_ids), Tenant.status == TenantStatus.active)
+            .first()
+        )
+        if active_tenant:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete: active tenants are linked to this property.",
+            )
+
+        from app.models.maintenance import MaintenanceRequest
+
+        db.query(MaintenanceRequest).filter(MaintenanceRequest.unit_id.in_(unit_ids)).delete(
+            synchronize_session=False
+        )
+
+    db.delete(prop)
+    db.commit()
+
+
 # ── UNIT CRUD ─────────────────────────────────────────────────────
 
 def _get_unit(db: Session, unit_id: int, owner_id: int) -> Unit:
@@ -217,5 +254,13 @@ def set_property_photo(db: Session, property_id: int, photo_url: str, owner_id: 
     """Store the uploaded photo URL on the property."""
     prop = get_property(db, property_id, owner_id)
     prop.photo_path = photo_url
+    db.commit()
+    return get_property(db, property_id, owner_id)
+
+
+def set_property_video(db: Session, property_id: int, video_url: str, owner_id: int) -> Property:
+    """Store the uploaded tour video URL on the property."""
+    prop = get_property(db, property_id, owner_id)
+    prop.video_path = video_url
     db.commit()
     return get_property(db, property_id, owner_id)

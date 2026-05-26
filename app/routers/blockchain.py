@@ -48,7 +48,15 @@ def walrus_inventory(db: Session = Depends(get_db), current_user: User = Depends
 
 @router.get("/blockchain/wallet/me")
 def my_wallet(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    return success_response(data=blockchain_service.get_primary_wallet(db, current_user))
+    data = blockchain_service.ensure_platform_wallet(db, current_user, request_faucet=False)
+    return success_response(data=data)
+
+
+@router.post("/blockchain/wallet/ensure")
+def ensure_wallet(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """Idempotent — creates platform Sui address for this email account if missing."""
+    data = blockchain_service.ensure_platform_wallet(db, current_user, request_faucet=True)
+    return success_response(data=data, message="RentDirect Sui wallet ready.")
 
 
 @router.post("/blockchain/wallet/link")
@@ -105,6 +113,17 @@ def release_escrow(
     rows = blockchain_service.list_escrows_for_user(db, current_user)
     row = next((r for r in rows if r["id"] == hold.id), None)
     return success_response(data=row or {"id": hold.id}, message="Escrow released.")
+
+
+@router.post("/payments/checkout/{reference}/pay-platform-sui")
+def pay_platform_sui(
+    reference: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_tenant),
+):
+    """Pay rent from the tenant's auto-provisioned Sui wallet — no extension connect step."""
+    data = payment_gateway_service.execute_platform_sui_checkout(db, current_user, reference)
+    return success_response(data=data, message="Sui payment submitted from your RentDirect wallet.")
 
 
 @router.post("/payments/checkout/{reference}/confirm-sui")

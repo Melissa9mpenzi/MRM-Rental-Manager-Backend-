@@ -38,6 +38,10 @@ class Lease(Base):
     
     # Metadata
     notes = Column(Text, nullable=True)
+    # Sui/Walrus trust layer — immutable rental agreement proof
+    agreement_hash = Column(String(128), nullable=True, index=True)
+    walrus_blob_id = Column(String(256), nullable=True)
+    verification_token = Column(String(64), unique=True, nullable=True, index=True)
     created_at = Column(DateTime, default=func.now(), server_default=func.now())
     updated_at = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())
     

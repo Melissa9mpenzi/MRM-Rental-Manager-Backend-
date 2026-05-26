@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, joinedload
 from datetime import date
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import require_landlord
 from app.models.user import User
 from app.models.property import Property, Unit, UnitStatus
 from app.models.tenant import Tenant, TenantStatus
@@ -17,7 +17,7 @@ router = APIRouter(tags=["Dashboard"])
 @router.get("/dashboard/stats")
 def get_dashboard_stats(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_landlord),
 ):
     uid = current_user.id
     today = date.today()
@@ -95,6 +95,41 @@ def get_dashboard_stats(
     # Top arrears (max 5)
     top_arrears = [a for a in arrears_list if a["balance_due"] > 0][:5]
 
+    collection_rate = (
+        round(this_month_collected / expected_monthly_rent * 100, 1)
+        if expected_monthly_rent > 0
+        else 0.0
+    )
+
+    active_tenant_rows = (
+        db.query(Tenant)
+        .filter(Tenant.owner_id == uid, Tenant.status == TenantStatus.active)
+        .all()
+    )
+    if active_tenant_rows:
+        avg_days = sum((today - t.lease_start).days for t in active_tenant_rows if t.lease_start) / len(
+            active_tenant_rows
+        )
+        avg_tenancy_months = round(avg_days / 30.44, 1)
+    else:
+        avg_tenancy_months = 0.0
+
+    occupancy_by_property = [
+        {
+            "id": p.id,
+            "name": p.name,
+            "total_units": len(p.units),
+            "occupied_units": sum(1 for u in p.units if u.status == UnitStatus.occupied),
+            "vacant_units": sum(1 for u in p.units if u.status == UnitStatus.vacant),
+            "occupancy_rate": round(
+                sum(1 for u in p.units if u.status == UnitStatus.occupied) / len(p.units) * 100, 1
+            )
+            if p.units
+            else 0.0,
+        }
+        for p in properties
+    ]
+
     return success_response(
         data={
         "total_properties":       total_properties,
@@ -111,5 +146,8 @@ def get_dashboard_stats(
         "monthly_income":         monthly_income,
         "recent_properties":      recent_properties,
         "top_arrears":            top_arrears,
+        "collection_rate":        collection_rate,
+        "avg_tenancy_months":     avg_tenancy_months,
+        "occupancy_by_property":  occupancy_by_property,
         }
     )

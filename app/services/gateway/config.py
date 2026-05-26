@@ -65,7 +65,9 @@ def gateway_public_status() -> dict:
         "provider": name,
         "configured": configured or mock,
         "mode": mode,
-        "live_payments": configured and mode == "live" and not mock,
+        # Real provider API (not dev mock). Pesapal/MTN sandbox still counts as real integration.
+        "live_payments": configured and not mock,
+        "provider_sandbox": mode in ("sandbox", "test") if configured else False,
         "mock_enabled": mock,
         "country": "UG",
         "supports": {

@@ -18,7 +18,7 @@ from app.models.payment import Payment
 from app.models.payment_checkout import PaymentCheckout
 from app.models.tenant import Tenant
 from app.models.user import User
-from app.services.blockchain import sui_rpc, walrus_anchor_service, walrus_service
+from app.services.blockchain import sui_rpc, walrus_anchor_service, walrus_service, wallet_provision
 from app.utils.response import error_response
 
 
@@ -36,8 +36,12 @@ def blockchain_public_status() -> dict[str, Any]:
         "escrow_module": (settings.sui_escrow_module or "escrow").strip(),
         "walrus_configured": walrus_service.is_walrus_configured(),
         "ugx_per_sui": float(settings.sui_ugx_per_sui or 6_000_000),
+        "platform_wallets": True,
+        "wallet_hint":
+            "Sui address is provisioned with your email account; connect an external wallet only if you want self-custody signing.",
         "supports": {
             "wallet_payments": is_sui_configured(),
+            "platform_wallet_checkout": is_sui_configured(),
             "receipt_anchoring": is_sui_configured(),
             "escrow": bool((settings.sui_package_id or "").strip()),
             "walrus_storage": True,
@@ -49,7 +53,57 @@ def blockchain_public_status() -> dict[str, Any]:
     }
 
 
-def link_wallet(db: Session, user: User, sui_address: str, wallet_name: Optional[str] = None) -> dict:
+def ensure_platform_wallet(db: Session, user: User, *, request_faucet: bool = True) -> dict:
+    """
+    Every email account gets a primary Sui address (deterministic, platform-custodied).
+    No separate “connect wallet” step required for identity or display.
+    """
+    existing = (
+        db.query(BlockchainWallet)
+        .filter(
+            BlockchainWallet.user_id == user.id,
+            BlockchainWallet.is_primary == True,  # noqa: E712
+        )
+        .first()
+    )
+    if existing:
+        return get_primary_wallet(db, user)
+
+    _, address = wallet_provision.derive_keypair(user.id)
+    db.add(
+        BlockchainWallet(
+            user_id=user.id,
+            sui_address=address,
+            wallet_name="RentDirect Wallet",
+            wallet_source="platform",
+            is_primary=True,
+        )
+    )
+    db.commit()
+    if request_faucet:
+        wallet_provision.request_testnet_gas(address)
+    return get_primary_wallet(db, user)
+
+
+def link_privy_wallet(db: Session, user: User, sui_address: str) -> dict:
+    """Primary wallet from Privy embedded Sui wallet (Google / Apple / email login)."""
+    return link_wallet(
+        db,
+        user,
+        sui_address,
+        wallet_name="Privy Wallet",
+        wallet_source="privy",
+    )
+
+
+def link_wallet(
+    db: Session,
+    user: User,
+    sui_address: str,
+    wallet_name: Optional[str] = None,
+    *,
+    wallet_source: str = "external",
+) -> dict:
     addr = (sui_address or "").strip()
     if not addr.startswith("0x") or len(addr) < 10:
         raise error_response("Invalid Sui address.", status_code=400)
@@ -72,7 +126,8 @@ def link_wallet(db: Session, user: User, sui_address: str, wallet_name: Optional
             BlockchainWallet(
                 user_id=user.id,
                 sui_address=addr,
-                wallet_name=wallet_name,
+                wallet_name=wallet_name or "External wallet",
+                wallet_source=wallet_source,
                 is_primary=True,
             )
         )
@@ -87,11 +142,18 @@ def get_primary_wallet(db: Session, user: User) -> dict:
         .first()
     )
     if not row:
-        return {"linked": False, "sui_address": None}
+        return {
+            "linked": False,
+            "sui_address": None,
+            "wallet_source": None,
+            "auto_provisioned": False,
+        }
     return {
         "linked": True,
         "sui_address": row.sui_address,
         "wallet_name": row.wallet_name,
+        "wallet_source": getattr(row, "wallet_source", None) or "platform",
+        "auto_provisioned": (getattr(row, "wallet_source", None) or "platform") in ("platform", "privy"),
         "linked_at": row.linked_at.isoformat() if row.linked_at else None,
     }
 
@@ -127,9 +189,12 @@ def anchor_payment_receipt(
     receipt_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     try:
-        walrus_id = walrus_service.store_json({**payload, "receipt_hash": receipt_hash})
+        stored = walrus_service.store_json({**payload, "receipt_hash": receipt_hash})
+        walrus_id = stored.walrus_blob_id
+        if stored.content_hash:
+            receipt_hash = stored.content_hash
     except Exception:
-        walrus_id = f"hash:{receipt_hash[:32]}"
+        walrus_id = None
 
     row = BlockchainReceipt(
         payment_id=payment.id,
@@ -303,7 +368,8 @@ def admin_dashboard(db: Session, user: User) -> dict[str, Any]:
             "smart_contracts": len(smart_contracts) or (1 if status.get("enabled") else 0),
         },
         "wallet": {
-            "sui_balance": None,
+            "sui_balance": wallet_balance,
+            "sui_address": get_primary_wallet(db, user).get("sui_address"),
             "escrow_balance": round(
                 sum(_mist_to_sui_display(e.get("amount_ugx")) for e in escrows if e.get("status") in ("funded", "held")),
                 4,
@@ -356,7 +422,13 @@ def _volume_by_day(receipts: list[dict]) -> list[dict]:
 
 
 def _network_snapshot(network: str) -> dict[str, Any]:
-    base = {"healthy": True, "network": network, "block_height": "—", "tps": "—", "checkpoint": "—", "epoch": "—", "gas_mist": "—"}
+    base = {
+        "healthy": True,
+        "network": network,
+        "block_height": None,
+        "checkpoint": None,
+        "rpc_url": sui_rpc.rpc_url(),
+    }
     if not is_sui_configured():
         base["healthy"] = False
         return base
@@ -364,9 +436,6 @@ def _network_snapshot(network: str) -> dict[str, Any]:
         cp = sui_rpc._rpc("sui_getLatestCheckpointSequenceNumber", [])
         base["checkpoint"] = str(cp)
         base["block_height"] = str(cp)
-        base["tps"] = "297"
-        base["epoch"] = "—"
-        base["gas_mist"] = "750"
     except Exception:
         base["healthy"] = False
     return base
@@ -428,6 +497,10 @@ def _escrow_out(h: EscrowHold) -> dict:
 
 
 def _receipt_out(r: BlockchainReceipt) -> dict:
+    proof = walrus_anchor_service.proof_fields(
+        r.walrus_blob_id,
+        content_hash=r.receipt_hash,
+    )
     return {
         "id": r.id,
         "payment_id": r.payment_id,
@@ -435,7 +508,9 @@ def _receipt_out(r: BlockchainReceipt) -> dict:
         "tx_digest": r.tx_digest,
         "receipt_hash": r.receipt_hash,
         "walrus_blob_id": r.walrus_blob_id,
-        "walrus_url": walrus_service.public_url(r.walrus_blob_id or ""),
+        "walrus_url": proof.get("walrus_url"),
+        "walrus_live": proof.get("walrus_live"),
+        "storage_type": proof.get("storage_type"),
         "status": r.status.value,
         "payment_method": r.payment_method,
         "amount_ugx": r.amount_ugx,

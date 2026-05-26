@@ -1,15 +1,15 @@
 # Sui payments — RentDirect UG (hybrid Web3)
 
+> **Sui-first framing:** [`SUI_FIRST_STRATEGY.md`](./SUI_FIRST_STRATEGY.md) — position as decentralized rental infrastructure, not “CRM + crypto.”
+
 ## Hackathon tracks
 
 | Priority | Track | RentDirect angle |
 |----------|--------|------------------|
-| **Primary** | **DeFi & Payments** | Rental escrow, hybrid MTN + Sui wallet, Move contracts, on-chain receipts — real-world finance, not a DEX. |
-| **Secondary** | **Walrus** | Receipts, leases, KYC hashes, property packets, escrow proofs, gov audit blobs. |
-| **Optional** | Agentic Web | Fraud alerts, dashboard AI insights. |
-| **Avoid** | DeepBook | Not order-book / trading infrastructure. |
-
-**Network for demos:** `SUI_NETWORK=testnet` (stable wallets, realistic txs). See `HACKATHON.md` in the frontend repo.
+| **Primary** | **DeFi & Payments** | Escrow, on-chain receipts, Sui wallets, Move contracts |
+| **Secondary** | **Walrus** | Agreements, receipts, KYC, escrow proofs, gov audit |
+| **Optional** | Risk signals | Rule-based fraud only — no fake AI |
+| **Avoid** | Agentic Web / DeepBook | Not our story |
 
 ---
 

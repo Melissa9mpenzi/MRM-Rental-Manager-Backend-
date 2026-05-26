@@ -69,7 +69,7 @@ def build_receipt_pdf(
 
     story = [
         Paragraph("RentDirect <font color='#00a376'>UG</font>", title),
-        Paragraph(f"{rtype} Receipt", ParagraphStyle("sub", parent=body, fontSize=11, textColor=muted)),
+        Paragraph("Blockchain Payment Receipt", ParagraphStyle("sub", parent=body, fontSize=11, textColor=muted)),
         Spacer(1, 0.3 * cm),
     ]
 
@@ -161,7 +161,7 @@ def build_receipt_pdf(
             [
                 _qr_image(verify_url),
                 Paragraph(
-                    f"<b>Verify this receipt</b><br/>Scan QR or visit:<br/>"
+                    f"<b>Scan to Verify Receipt</b><br/>Tamper-proof trust link:<br/>"
                     f"<font size='7'>{verify_url}</font><br/><br/>"
                     f"Checksum: <font size='7'>{receipt.get('checksum', '')[:16]}…</font><br/>"
                     f"Signature: <font size='7'>{receipt.get('digital_signature', '')[:20]}…</font>",

@@ -62,8 +62,10 @@ class User(Base):
     kyc_review_status = Column(String(20), nullable=False, default="none")
     kyc_walrus_blob_id = Column(String(256), nullable=True)
     kyc_manifest_hash = Column(String(64), nullable=True)
+    compliance_verify_token = Column(String(64), unique=True, nullable=True, index=True)
     trusted_for_commerce = Column(Boolean, nullable=False, default=False)
     firebase_uid = Column(String(128), nullable=True, unique=True, index=True)
+    privy_did = Column(String(128), nullable=True, unique=True, index=True)
 
     reset_otp       = Column(String(10), nullable=True)
     reset_otp_expiry = Column(DateTime, nullable=True)

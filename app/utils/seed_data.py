@@ -79,11 +79,20 @@ def seed_system_admin_only() -> User:
 
 
 def seed_database():
-    """Seed database with comprehensive test data."""
+    """Seed database with comprehensive test data (local dev / QA only)."""
+    from app.config import settings
+
+    if settings.environment == "production":
+        raise RuntimeError(
+            "Full demo seed is disabled in production. "
+            "Use real sign-ups and landlord workflows, or run: "
+            "python -m app.utils.seed_data --admin-only"
+        )
+
     db = SessionLocal()
-    
+
     try:
-        print("Starting database seeding (full demo data)…")
+        print("Starting database seeding (full demo data — dev only)…")
         
         # Create users (landlords and admin) — commit early so login works if later steps fail
         users = create_users(db)

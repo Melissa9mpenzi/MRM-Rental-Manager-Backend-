@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+import logging
+
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -6,6 +8,7 @@ from app.utils.response import success_response
 from app.services.marketplace_service import get_marketplace_listing, list_marketplace_listings
 
 router = APIRouter(prefix="/marketplace", tags=["Marketplace"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/listings")
@@ -19,18 +22,25 @@ def marketplace_listings(
     min_bedrooms: int | None = Query(None, ge=0),
     amenities: str | None = Query(None, description="Comma-separated: WiFi,Parking,Security,..."),
 ):
-    amenity_list = [a.strip() for a in amenities.split(",")] if amenities else None
-    rows = list_marketplace_listings(
-        db,
-        search=search,
-        min_rent=min_rent,
-        max_rent=max_rent,
-        unit_type=unit_type,
-        listing_category=listing_category,
-        min_bedrooms=min_bedrooms,
-        amenities=amenity_list,
-    )
-    return success_response(data=rows)
+    try:
+        amenity_list = [a.strip() for a in amenities.split(",")] if amenities else None
+        rows = list_marketplace_listings(
+            db,
+            search=search,
+            min_rent=min_rent,
+            max_rent=max_rent,
+            unit_type=unit_type,
+            listing_category=listing_category,
+            min_bedrooms=min_bedrooms,
+            amenities=amenity_list,
+        )
+        return success_response(data=rows)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("marketplace listings failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Marketplace listings are temporarily unavailable. Retry shortly.",
+        ) from exc
 
 
 @router.get("/listings/{unit_id}")

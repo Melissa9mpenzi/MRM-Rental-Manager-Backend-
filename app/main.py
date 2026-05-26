@@ -17,6 +17,7 @@ from app.routers import (
     auth,
     properties,
     dashboard,
+    reports,
     tenants,
     payments,
     notifications,
@@ -34,6 +35,7 @@ from app.routers import (
     blockchain,
     receipts,
     platform,
+    verify,
 )
 
 # Writable upload root (Vercel/Lambda only allow /tmp; project dir is read-only).
@@ -49,15 +51,36 @@ async def lifespan(app: FastAPI):
 
     log = logging.getLogger("uvicorn.error")
 
+    if "postgresql" in settings.database_url.lower():
+        try:
+            from sqlalchemy import inspect
+
+            from app.database import engine, postgres_table_schema
+
+            insp = inspect(engine)
+            schema = postgres_table_schema
+            if not insp.has_table("users", schema=schema):
+                log.error(
+                    "DATABASE_SCHEMA misconfigured: no users table in schema %r. "
+                    "Set DATABASE_SCHEMA=public on Vercel if your Neon data is in public.*",
+                    schema or "public",
+                )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Schema health check skipped: %s", exc)
+
     migration_task = None
-    if not is_serverless() and not settings.skip_startup_migrations:
-        async def _background_migrations() -> None:
+    if not settings.skip_startup_migrations:
+        async def _run_migrations() -> None:
             try:
                 await asyncio.to_thread(run_startup_migrations)
             except Exception as exc:  # noqa: BLE001
-                log.warning("Background startup migrations failed: %s", exc)
+                log.warning("Startup migrations failed: %s", exc)
 
-        migration_task = asyncio.create_task(_background_migrations())
+        # Serverless: schema must exist before first API request (gov overview, URA, fraud).
+        if is_serverless():
+            await _run_migrations()
+        else:
+            migration_task = asyncio.create_task(_run_migrations())
 
     gw = gateway_public_status()
     if settings.environment == "production" and not is_gateway_configured():
@@ -73,8 +96,43 @@ async def lifespan(app: FastAPI):
             gw.get("mode"),
         )
 
+    if settings.is_production:
+        from app.services.production_readiness import production_readiness
+
+        ready = production_readiness()
+        for msg in ready.get("issues") or []:
+            log.error("PRODUCTION: %s", msg)
+        for msg in ready.get("warnings") or []:
+            log.warning("PRODUCTION: %s", msg)
+        if ready.get("ready_for_global_demo"):
+            log.info("PRODUCTION: ready for global demo (live payments + DB).")
+
+    reminder_task = None
+
+    async def _rent_reminder_loop() -> None:
+        await asyncio.sleep(45)
+        while True:
+            try:
+                from app.services.rent_reminder_service import run_rent_reminder_job
+
+                stats = await asyncio.to_thread(run_rent_reminder_job)
+                if stats.get("tenant_notified") or stats.get("landlord_notified"):
+                    log.info("Rent reminder job: %s", stats)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Rent reminder job failed: %s", exc)
+            await asyncio.sleep(86400)
+
+    reminder_task = asyncio.create_task(_rent_reminder_loop())
+
     # Accept HTTP immediately; migrations run in background (avoids reload timeouts).
     yield
+
+    if reminder_task is not None:
+        reminder_task.cancel()
+        try:
+            await reminder_task
+        except asyncio.CancelledError:
+            pass
 
     if migration_task is not None:
         migration_task.cancel()
@@ -181,6 +239,7 @@ app.include_router(auth.router,         prefix=API)
 app.include_router(users.router,        prefix=API)
 app.include_router(properties.router,   prefix=API)
 app.include_router(dashboard.router,    prefix=API)
+app.include_router(reports.router,      prefix=API)
 app.include_router(tenants.router,      prefix=API)
 app.include_router(payments.router,     prefix=API)
 app.include_router(maintenance.router,  prefix=API)
@@ -197,6 +256,7 @@ app.include_router(government_auth.router, prefix=API)
 app.include_router(blockchain.router,     prefix=API)
 app.include_router(receipts.router,         prefix=API)
 app.include_router(platform.router,       prefix=API)
+app.include_router(verify.router,         prefix=API)
 
 
 @app.get("/", tags=["Health"])
@@ -238,13 +298,48 @@ def health_db():
             "database": "not_configured",
             "hint": "Set DATABASE_URL on Vercel (postgresql+psycopg2://...neon.tech/...?sslmode=require)",
         }
+    schema = (settings.database_schema or "public").strip()
+    table_schema = schema if schema and schema.lower() != "public" else "public"
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return {"status": "ok", "database": "connected"}
+            row = conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.tables "
+                    "WHERE table_schema = :s AND table_name = 'users' LIMIT 1"
+                ),
+                {"s": table_schema},
+            ).first()
+            if not row:
+                return {
+                    "status": "error",
+                    "database": "connected",
+                    "schema": table_schema,
+                    "app_tables": "missing_run_init_db",
+                    "hint": (
+                        "Neon is reachable but app tables are missing. Run "
+                        "python -m app.utils.init_db with the same DATABASE_URL, then retry login."
+                    ),
+                }
+        return {
+            "status": "ok",
+            "database": "connected",
+            "schema": table_schema,
+            "app_tables": "ready",
+        }
     except SQLAlchemyError as exc:
+        from app.db_errors import database_error_response
+
+        msg, _ = database_error_response(exc)
+        detail = str(getattr(exc, "orig", exc) or exc)[:240]
+        app_tables = "unknown"
+        if "does not exist" in detail.lower() or "undefinedtable" in detail.lower():
+            app_tables = "missing_run_init_db"
         return {
             "status": "error",
-            "database": "connection_failed",
-            "detail": str(exc)[:240],
+            "database": "connection_failed" if "does not exist" not in detail.lower() else "schema_missing",
+            "schema": schema,
+            "app_tables": app_tables,
+            "detail": detail,
+            "hint": msg,
         }

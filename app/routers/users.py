@@ -31,7 +31,20 @@ router = APIRouter(prefix="/users", tags=["Users"])
 class ProfileUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    national_id_number: Optional[str] = None
     role: Optional[str] = None
+
+
+def _sync_linked_tenant_profile(db: Session, user: User) -> None:
+    """Keep rental tenant row aligned with account name/phone when linked."""
+    from app.models.tenant import Tenant
+
+    tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
+    if not tenant:
+        return
+    tenant.full_name = user.full_name
+    if user.phone:
+        tenant.phone = user.phone
 
 
 _SELF_SERVICE_ROLES = frozenset({UserRole.tenant, UserRole.landlord, UserRole.staff})
@@ -56,8 +69,10 @@ def update_me(
 ):
     if data.full_name:
         current_user.full_name = data.full_name.strip()
-    if data.phone:
-        current_user.phone = data.phone.strip()
+    if data.phone is not None:
+        current_user.phone = data.phone.strip() or None
+    if data.national_id_number is not None:
+        current_user.national_id_number = data.national_id_number.strip() or None
     if data.role is not None:
         raw = data.role.strip().lower()
         try:
@@ -67,6 +82,7 @@ def update_me(
         if new_role not in _SELF_SERVICE_ROLES:
             raise HTTPException(403, "This role cannot be self-assigned.")
         current_user.role = new_role
+    _sync_linked_tenant_profile(db, current_user)
     db.commit()
     db.refresh(current_user)
     return current_user

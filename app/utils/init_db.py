@@ -48,12 +48,17 @@ from app.models import (  # noqa: F401
     BlockchainWallet,
     BlockchainReceipt,
     EscrowHold,
+    AgentLead,
+    AgentClient,
+    AgentScheduleEvent,
+    AgentDeal,
+    AgentCommission,
 )
 
 logger = logging.getLogger(__name__)
 
 # Bump when startup migration steps change; local stamp skips slow Neon round-trips on reload.
-_STARTUP_STAMP_VERSION = "v15-walrus-anchors"
+_STARTUP_STAMP_VERSION = "v18-verification-tokens"
 _STARTUP_STAMP_FILE = Path(__file__).resolve().parent.parent.parent / ".startup_migrations.stamp"
 
 
@@ -130,6 +135,7 @@ def ensure_users_column_migrations() -> None:
             "BOOLEAN NOT NULL DEFAULT false",
         ),
         ("firebase_uid", "VARCHAR(128) NULL", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
+        ("privy_did", "VARCHAR(128) NULL", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
         ("national_id_number", "VARCHAR(20) NULL", "VARCHAR(20) NULL", "VARCHAR(20) NULL"),
         ("gov_agency", "VARCHAR(24) NULL", "VARCHAR(24) NULL", "VARCHAR(24) NULL"),
         ("gov_work_id", "VARCHAR(64) NULL", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
@@ -269,6 +275,14 @@ def ensure_payments_column_migrations() -> None:
         ),
         ("reference", "VARCHAR(100) NULL", "VARCHAR(100) NULL", "VARCHAR(100) NULL"),
         ("updated_at", "TIMESTAMP WITHOUT TIME ZONE NULL", "DATETIME NULL", "TIMESTAMP NULL"),
+        (
+            "is_deleted",
+            "BOOLEAN NOT NULL DEFAULT false",
+            "INTEGER NOT NULL DEFAULT 0",
+            "BOOLEAN NOT NULL DEFAULT false",
+        ),
+        ("period_month", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1"),
+        ("period_year", "INTEGER NOT NULL DEFAULT 2025", "INTEGER NOT NULL DEFAULT 2025", "INTEGER NOT NULL DEFAULT 2025"),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _payment_column_ddls:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)
@@ -322,13 +336,20 @@ def ensure_government_schema_migrations() -> None:
     is_pg = "postgresql" in url
 
     if is_pg:
+        enum_type = (
+            f'"{postgres_table_schema}".userrole'
+            if postgres_table_schema
+            else "userrole"
+        )
         for val in ("system_admin", "gov_super", "gov_nira", "gov_kcca", "gov_ura"):
             try:
                 with engine.begin() as conn:
-                    conn.execute(text(f"ALTER TYPE userrole ADD VALUE IF NOT EXISTS '{val}'"))
-                logger.info("Ensured userrole enum value %s", val)
+                    conn.execute(
+                        text(f"ALTER TYPE {enum_type} ADD VALUE IF NOT EXISTS '{val}'")
+                    )
+                logger.info("Ensured %s enum value %s", enum_type, val)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("Could not add userrole.%s: %s", val, exc)
+                logger.warning("Could not add %s.%s: %s", enum_type, val, exc)
         try:
             qual = f'"{schema}"."users"' if schema else "users"
             with engine.begin() as conn:
@@ -386,6 +407,74 @@ def ensure_government_schema_migrations() -> None:
                     logger.info("Added properties.%s", col_name)
     except Exception as exc:  # noqa: BLE001
         logger.warning("ensure_government_schema_migrations properties: %s", exc)
+
+    try:
+        if insp.has_table("properties", schema=schema):
+            col_names = {c["name"] for c in insp.get_columns("properties", schema=schema)}
+            qual = f'"{schema}"."properties"' if schema else "properties"
+            if "video_path" not in col_names:
+                ddl = "VARCHAR(500) NULL"
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN video_path {ddl}"))
+                logger.info("Added properties.video_path")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_government_schema_migrations properties video_path: %s", exc)
+
+
+def ensure_verification_token_columns() -> None:
+    """QR verification tokens for leases, properties, and NIRA compliance."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    url = settings.database_url.lower()
+    is_pg = "postgresql" in url
+    specs = (
+        ("leases", "verification_token", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+        ("properties", "verification_token", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+        ("users", "compliance_verify_token", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+    )
+    try:
+        for table, col_name, ddl_pg, ddl_sqlite in specs:
+            if not insp.has_table(table, schema=schema):
+                continue
+            cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
+            if col_name in cols:
+                continue
+            qual = f'"{schema}"."{table}"' if schema else table
+            ddl = ddl_pg if is_pg else ddl_sqlite
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+            logger.info("Added %s.%s", table, col_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_verification_token_columns: %s", exc)
+
+
+def ensure_lease_agreement_columns() -> None:
+    """Sui/Walrus rental agreement proof on leases."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    try:
+        if not insp.has_table("leases", schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns("leases", schema=schema)}
+        qual = f'"{schema}"."leases"' if schema else "leases"
+        url = settings.database_url.lower()
+        is_pg = "postgresql" in url
+        for col_name, ddl_pg, ddl_sqlite in (
+            ("agreement_hash", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
+            ("walrus_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL"),
+        ):
+            if col_name in cols:
+                continue
+            ddl = ddl_pg if is_pg else ddl_sqlite
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+            logger.info("Added leases.%s", col_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_lease_agreement_columns: %s", exc)
 
 
 def ensure_walrus_anchor_migrations() -> None:
@@ -457,6 +546,30 @@ def ensure_blockchain_tables() -> None:
             model.__table__.create(bind=engine, checkfirst=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("ensure_blockchain_tables (%s): %s", model.__tablename__, exc)
+    ensure_blockchain_wallet_source_column()
+
+
+def ensure_blockchain_wallet_source_column() -> None:
+    """platform vs external wallet on existing blockchain_wallets rows."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    try:
+        if not insp.has_table("blockchain_wallets", schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns("blockchain_wallets", schema=schema)}
+        if "wallet_source" in cols:
+            return
+        qual = f'"{schema}"."blockchain_wallets"' if schema else "blockchain_wallets"
+        url = settings.database_url.lower()
+        is_pg = "postgresql" in url
+        ddl = "VARCHAR(16) NOT NULL DEFAULT 'platform'" if is_pg else "VARCHAR(16) DEFAULT 'platform'"
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN wallet_source {ddl}"))
+        logger.info("Added blockchain_wallets.wallet_source")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_blockchain_wallet_source_column: %s", exc)
 
 
 def ensure_receipt_tables() -> None:
@@ -558,14 +671,28 @@ def run_incremental_migrations() -> None:
     ensure_rental_hub_messaging_migrations()
     ensure_unit_listing_filter_columns()
     ensure_government_schema_migrations()
+    ensure_verification_token_columns()
+    ensure_lease_agreement_columns()
     ensure_walrus_anchor_migrations()
     ensure_government_invitation_tables()
+
+
+def _startup_stamp_path() -> Path:
+    """Local dev: project root stamp. Serverless: /tmp (writable, ephemeral)."""
+    from app.runtime import is_serverless
+
+    if is_serverless():
+        return Path("/tmp") / ".startup_migrations.stamp"
+    return _STARTUP_STAMP_FILE
 
 
 def run_startup_migrations() -> None:
     """
     Lightweight boot migrations for uvicorn (no full init_tables).
-    Skipped when SKIP_STARTUP_MIGRATIONS=true or stamp file matches version.
+    Skipped when SKIP_STARTUP_MIGRATIONS=true.
+
+    Incremental ALTER steps always run (idempotent). The stamp only avoids
+    repeating them on the same local uvicorn process during hot reload.
     """
     from app.config import settings
 
@@ -573,18 +700,23 @@ def run_startup_migrations() -> None:
         logger.info("Startup migrations skipped (SKIP_STARTUP_MIGRATIONS).")
         return
 
+    stamp_path = _startup_stamp_path()
+    skip_incremental = False
     try:
-        if _STARTUP_STAMP_FILE.exists():
-            if _STARTUP_STAMP_FILE.read_text(encoding="utf-8").strip() == _STARTUP_STAMP_VERSION:
-                logger.info("Startup migrations skipped (stamp %s).", _STARTUP_STAMP_VERSION)
-                return
+        if stamp_path.exists():
+            if stamp_path.read_text(encoding="utf-8").strip() == _STARTUP_STAMP_VERSION:
+                skip_incremental = True
     except OSError as exc:
         logger.warning("Could not read migration stamp: %s", exc)
+
+    if skip_incremental:
+        logger.info("Startup migrations skipped (stamp %s).", _STARTUP_STAMP_VERSION)
+        return
 
     logger.info("Running startup migrations…")
     run_incremental_migrations()
     try:
-        _STARTUP_STAMP_FILE.write_text(_STARTUP_STAMP_VERSION, encoding="utf-8")
+        stamp_path.write_text(_STARTUP_STAMP_VERSION, encoding="utf-8")
     except OSError as exc:
         logger.warning("Could not write migration stamp: %s", exc)
     logger.info("Startup migrations complete.")
