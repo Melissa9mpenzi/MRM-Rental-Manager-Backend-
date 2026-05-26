@@ -519,6 +519,89 @@ def admin_user_account_action(
     }
 
 
+def admin_delete_user(
+    db: Session,
+    *,
+    actor_id: int,
+    target_user_id: int,
+) -> dict[str, Any]:
+    """Permanently remove a user and cascade-linked platform data."""
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models.gov_login_session import GovLoginSession
+    from app.models.government_invitation import GovernmentInvitation
+    from app.services.audit_service import log_action
+
+    user = db.query(User).filter(User.id == target_user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    if target_user_id == actor_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+
+    role = _role_value(user.role)
+    email = (user.email or "").strip().lower()
+    full_name = user.full_name or email
+
+    if role == UserRole.system_admin.value:
+        admin_count = (
+            db.query(func.count(User.id)).filter(User.role == UserRole.system_admin).scalar() or 0
+        )
+        if admin_count <= 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete the only system administrator.",
+            )
+
+    db.query(MaintenanceRequest).filter(MaintenanceRequest.reported_by == target_user_id).update(
+        {MaintenanceRequest.reported_by: None},
+        synchronize_session=False,
+    )
+    db.query(GovLoginSession).filter(GovLoginSession.user_id == target_user_id).delete(
+        synchronize_session=False
+    )
+    if email:
+        db.query(GovernmentInvitation).filter(
+            func.lower(GovernmentInvitation.email) == email
+        ).delete(synchronize_session=False)
+
+    db.query(Tenant).filter(Tenant.user_id == target_user_id).update(
+        {Tenant.user_id: None},
+        synchronize_session=False,
+    )
+
+    log_action(
+        db,
+        user_id=actor_id,
+        action="admin_delete_user",
+        table_name="users",
+        record_id=target_user_id,
+        old_value={"email": email, "full_name": full_name, "role": role},
+        new_value=None,
+    )
+
+    db.delete(user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot delete this account — linked records still reference this user. "
+                "Try disconnecting first, or contact support."
+            ),
+        ) from exc
+
+    return {
+        "id": target_user_id,
+        "email": email,
+        "full_name": full_name,
+        "role": role,
+        "message": f"Permanently deleted {full_name} ({email}).",
+    }
+
+
 def admin_list_properties(
     db: Session,
     *,

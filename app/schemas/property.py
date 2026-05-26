@@ -115,6 +115,7 @@ class PropertyOut(BaseModel):
     photo_path:            Optional[str] = None
     video_path:            Optional[str] = None
     is_active:             bool
+    gov_verification_status: str = "pending"
     total_units:           int
     occupied_units:        int
     vacant_units:          int
@@ -136,6 +137,7 @@ class PropertySummary(BaseModel):
     photo_path:            Optional[str] = None
     video_path:            Optional[str] = None
     is_active:             bool
+    gov_verification_status: str = "pending"
     total_units:           int
     occupied_units:        int
     vacant_units:          int

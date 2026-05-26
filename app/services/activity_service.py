@@ -54,7 +54,7 @@ def get_activity_feed(db: Session, user: User, *, limit: int = 25) -> list[dict[
             pays = (
                 db.query(Payment)
                 .filter(
-                    Payment.property_id.in_(prop_ids),
+                    Payment.owner_id == user.id,
                     Payment.is_deleted.is_(False),
                     Payment.payment_type == PaymentType.rent,
                 )

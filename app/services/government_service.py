@@ -323,7 +323,7 @@ def overview_summary(db: Session, *, agency: str = "all") -> dict[str, Any]:
     if gov_col is not None:
         verified_properties = (
             db.query(func.count(Property.id))
-            .filter(Property.is_active == True, gov_col == "verified")
+            .filter(gov_col == "verified")
             .scalar()
             or 0
         )
@@ -333,11 +333,18 @@ def overview_summary(db: Session, *, agency: str = "all") -> dict[str, Any]:
             .scalar()
             or 0
         )
+        flagged_properties = (
+            db.query(func.count(Property.id))
+            .filter(gov_col.in_(["rejected", "illegal"]))
+            .scalar()
+            or 0
+        )
     else:
         verified_properties = (
             db.query(func.count(Property.id)).filter(Property.is_active == True).scalar() or 0
         )
         pending_properties = max(0, int(properties_total) - int(verified_properties))
+        flagged_properties = 0
 
     today = date.today()
     tax_filters = [_payment_not_deleted(), _rent_payment_type_filter()]
@@ -382,6 +389,8 @@ def overview_summary(db: Session, *, agency: str = "all") -> dict[str, Any]:
         "pending_kyc": int(pending_kyc),
         "flagged_accounts": int(flagged),
         "verified_properties": int(verified_properties),
+        "properties_total": int(properties_total),
+        "flagged_properties": int(flagged_properties),
         "tax_revenue_ugx": float(tax_revenue),
         "fraud_cases": int(flagged),
         "pending_inspections": int(pending_properties),
@@ -406,7 +415,7 @@ def overview_summary(db: Session, *, agency: str = "all") -> dict[str, Any]:
             {"name": "Pending", "value": int(pending_properties), "color": "#F59E0B"},
             {
                 "name": "Rejected / Illegal",
-                "value": max(0, int(properties_total) - int(verified_properties) - int(pending_properties)),
+                "value": int(flagged_properties),
                 "color": "#EF4444",
             },
         ]
@@ -565,6 +574,46 @@ def nira_decide(
 
         out["verification_url"] = verify_page_url(user.compliance_verify_token)
     return out
+
+
+def kcca_property_stats(db: Session) -> dict[str, Any]:
+    """Live KCCA property counts for dashboard cards (not filtered by tab)."""
+    gov_col = _property_gov_status_column()
+    total = db.query(func.count(Property.id)).scalar() or 0
+    if gov_col is None:
+        return {
+            "total": int(total),
+            "verified": 0,
+            "pending": int(total),
+            "inspection": 0,
+            "flagged": 0,
+            "inspection_districts": 0,
+        }
+
+    verified = db.query(func.count(Property.id)).filter(gov_col == "verified").scalar() or 0
+    pending = db.query(func.count(Property.id)).filter(gov_col == "pending").scalar() or 0
+    inspection = db.query(func.count(Property.id)).filter(gov_col == "inspection").scalar() or 0
+    flagged = (
+        db.query(func.count(Property.id)).filter(gov_col.in_(["rejected", "illegal"])).scalar() or 0
+    )
+    inspection_districts = (
+        db.query(func.count(func.distinct(Property.district)))
+        .filter(
+            gov_col == "inspection",
+            Property.district.isnot(None),
+            Property.district != "",
+        )
+        .scalar()
+        or 0
+    )
+    return {
+        "total": int(total),
+        "verified": int(verified),
+        "pending": int(pending),
+        "inspection": int(inspection),
+        "flagged": int(flagged),
+        "inspection_districts": int(inspection_districts),
+    }
 
 
 def kcca_properties(db: Session, *, status: Optional[str] = None, limit: int = 50) -> list[dict]:

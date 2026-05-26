@@ -58,7 +58,7 @@ from app.models import (  # noqa: F401
 logger = logging.getLogger(__name__)
 
 # Bump when startup migration steps change; local stamp skips slow Neon round-trips on reload.
-_STARTUP_STAMP_VERSION = "v17-gov-portal-columns"
+_STARTUP_STAMP_VERSION = "v18-verification-tokens"
 _STARTUP_STAMP_FILE = Path(__file__).resolve().parent.parent.parent / ".startup_migrations.stamp"
 
 

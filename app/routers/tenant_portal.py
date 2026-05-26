@@ -86,10 +86,24 @@ def get_my_payments(
     """Get payment history for the logged-in tenant with standardized response"""
     tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
     if not tenant:
-        raise error_response("Tenant profile not found.", status_code=404)
+        return success_response(data=[], message="No rental record yet — payments appear after your landlord assigns a unit.")
     
     payments = db.query(Payment).filter(Payment.tenant_id == tenant.id).order_by(Payment.payment_date.desc()).all()
-    return success_response(data=payments)
+    out = [
+        {
+            "id": p.id,
+            "amount": float(p.amount or 0),
+            "payment_type": p.payment_type.value if hasattr(p.payment_type, "value") else str(p.payment_type),
+            "payment_method": p.payment_method.value if hasattr(p.payment_method, "value") else str(p.payment_method),
+            "reference": p.reference,
+            "period_month": p.period_month,
+            "period_year": p.period_year,
+            "payment_date": p.payment_date.isoformat() if p.payment_date else None,
+            "notes": p.notes,
+        }
+        for p in payments
+    ]
+    return success_response(data=out)
 
 
 @router.get("/my-invoices")

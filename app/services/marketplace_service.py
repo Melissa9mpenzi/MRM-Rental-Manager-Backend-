@@ -10,6 +10,10 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.property import Property, Unit, UnitStatus, UnitType
 from app.models.user import User
 from app.services.compliance_service import compliance_badges_public, listing_compliance_badges
+from app.utils.schema_compat import table_columns
+
+# Tenants can browse vacant units while KCCA review is pending (badge shows status).
+_MARKETPLACE_GOV_STATUSES = ("verified", "pending")
 
 
 def _beds_for_unit_type(ut: UnitType) -> int:
@@ -53,6 +57,7 @@ def _serialize_unit(
         "sqft": area,
         "area_sqm": area,
         "verified": bool(badges and badges.get("marketplace_live")),
+        "gov_verification_status": (prop.gov_verification_status or "pending").lower(),
         "compliance": compliance_badges_public(badges or {}),
         "image": prop.photo_path or "/images/hero-villa.jpg",
         "desc": (unit.description or prop.description or "").strip() or f"{prop.name} — {ut_val.replace('_', ' ')}.",
@@ -62,6 +67,26 @@ def _serialize_unit(
         "floor_number": unit.floor_number or 0,
         "amenities": amenities,
     }
+
+
+def _marketplace_base_query(db: Session):
+    q = (
+        db.query(Unit)
+        .join(Property, Unit.property_id == Property.id)
+        .join(User, Property.owner_id == User.id)
+        .filter(
+            Property.is_active.is_(True),
+            User.kyc_review_status == "approved",
+            User.is_active.is_(True),
+            Unit.status == UnitStatus.vacant,
+            Unit.rent_amount > 0,
+        )
+    )
+    if "gov_suspended" in table_columns("users"):
+        q = q.filter(User.gov_suspended.is_(False))
+    if "gov_verification_status" in table_columns("properties"):
+        q = q.filter(Property.gov_verification_status.in_(_MARKETPLACE_GOV_STATUSES))
+    return q
 
 
 def list_marketplace_listings(
@@ -75,19 +100,7 @@ def list_marketplace_listings(
     min_bedrooms: Optional[int] = None,
     amenities: Optional[List[str]] = None,
 ) -> List[dict[str, Any]]:
-    q = (
-        db.query(Unit)
-        .join(Property, Unit.property_id == Property.id)
-        .join(User, Property.owner_id == User.id)
-        .filter(
-            Property.is_active.is_(True),
-            Property.gov_verification_status == "verified",
-            User.kyc_review_status == "approved",
-            User.is_active.is_(True),
-            User.gov_suspended.is_(False),
-            Unit.status == UnitStatus.vacant,
-        )
-    )
+    q = _marketplace_base_query(db)
     if search and search.strip():
         term = f"%{search.strip()}%"
         q = q.filter(
@@ -163,17 +176,8 @@ def list_marketplace_listings(
 
 def get_marketplace_listing(db: Session, unit_id: int) -> Optional[dict[str, Any]]:
     unit = (
-        db.query(Unit)
-        .join(Property, Unit.property_id == Property.id)
-        .join(User, Property.owner_id == User.id)
-        .filter(
-            Unit.id == unit_id,
-            Property.is_active.is_(True),
-            Property.gov_verification_status == "verified",
-            User.kyc_review_status == "approved",
-            User.gov_suspended.is_(False),
-            Unit.status == UnitStatus.vacant,
-        )
+        _marketplace_base_query(db)
+        .filter(Unit.id == unit_id)
         .options(joinedload(Unit.parent_property))
         .first()
     )

@@ -15,6 +15,7 @@ from app.services.workspace_service import (
     admin_list_users,
     admin_summary,
     admin_user_account_action,
+    admin_delete_user,
     staff_summary,
 )
 from app.schemas.agent_crm import (
@@ -100,6 +101,16 @@ def admin_user_account(
         target_user_id=user_id,
         action=body.action,
     )
+    return success_response(data=data, message=data.get("message"))
+
+
+@router.delete("/admin/users/{user_id}", summary="Permanently delete a platform account")
+def admin_user_delete(
+    user_id: int,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_system_admin),
+):
+    data = admin_delete_user(db, actor_id=actor.id, target_user_id=user_id)
     return success_response(data=data, message=data.get("message"))
 
 

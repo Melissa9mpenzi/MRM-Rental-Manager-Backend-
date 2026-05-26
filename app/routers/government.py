@@ -83,6 +83,14 @@ def nira_decision(
     return success_response(data=data, message="NIRA decision recorded")
 
 
+@router.get("/kcca/stats")
+def kcca_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_government_agency("kcca")),
+):
+    return success_response(data=government_service.kcca_property_stats(db))
+
+
 @router.get("/kcca/properties")
 def kcca_properties(
     status: Optional[str] = None,

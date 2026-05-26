@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
+from app.models.lease import Lease
 from app.models.payment import Payment, PaymentType
-from app.models.property import Property
+from app.models.property import Property, Unit
 from app.models.user import User, UserRole
 
 
@@ -32,13 +33,23 @@ def is_kcca_approved_property(prop: Property | None) -> bool:
 
 
 def property_has_recorded_rent(db: Session, property_id: int) -> bool:
+    """True when at least one rent payment exists for units on this property."""
+    base = [Payment.is_deleted.is_(False), Payment.payment_type == PaymentType.rent]
+
+    via_unit = (
+        db.query(Payment.id)
+        .join(Unit, Payment.unit_id == Unit.id)
+        .filter(Unit.property_id == property_id, *base)
+        .first()
+    )
+    if via_unit:
+        return True
+
     return (
         db.query(Payment.id)
-        .filter(
-            Payment.property_id == property_id,
-            Payment.is_deleted.is_(False),
-            Payment.payment_type == PaymentType.rent,
-        )
+        .join(Lease, Payment.lease_id == Lease.id)
+        .join(Unit, Lease.unit_id == Unit.id)
+        .filter(Unit.property_id == property_id, *base)
         .first()
         is not None
     )
