@@ -135,6 +135,7 @@ def ensure_users_column_migrations() -> None:
             "BOOLEAN NOT NULL DEFAULT false",
         ),
         ("firebase_uid", "VARCHAR(128) NULL", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
+        ("privy_did", "VARCHAR(128) NULL", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
         ("national_id_number", "VARCHAR(20) NULL", "VARCHAR(20) NULL", "VARCHAR(20) NULL"),
         ("gov_agency", "VARCHAR(24) NULL", "VARCHAR(24) NULL", "VARCHAR(24) NULL"),
         ("gov_work_id", "VARCHAR(64) NULL", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
@@ -420,6 +421,62 @@ def ensure_government_schema_migrations() -> None:
         logger.warning("ensure_government_schema_migrations properties video_path: %s", exc)
 
 
+def ensure_verification_token_columns() -> None:
+    """QR verification tokens for leases, properties, and NIRA compliance."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    url = settings.database_url.lower()
+    is_pg = "postgresql" in url
+    specs = (
+        ("leases", "verification_token", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+        ("properties", "verification_token", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+        ("users", "compliance_verify_token", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+    )
+    try:
+        for table, col_name, ddl_pg, ddl_sqlite in specs:
+            if not insp.has_table(table, schema=schema):
+                continue
+            cols = {c["name"] for c in insp.get_columns(table, schema=schema)}
+            if col_name in cols:
+                continue
+            qual = f'"{schema}"."{table}"' if schema else table
+            ddl = ddl_pg if is_pg else ddl_sqlite
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+            logger.info("Added %s.%s", table, col_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_verification_token_columns: %s", exc)
+
+
+def ensure_lease_agreement_columns() -> None:
+    """Sui/Walrus rental agreement proof on leases."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    try:
+        if not insp.has_table("leases", schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns("leases", schema=schema)}
+        qual = f'"{schema}"."leases"' if schema else "leases"
+        url = settings.database_url.lower()
+        is_pg = "postgresql" in url
+        for col_name, ddl_pg, ddl_sqlite in (
+            ("agreement_hash", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
+            ("walrus_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL"),
+        ):
+            if col_name in cols:
+                continue
+            ddl = ddl_pg if is_pg else ddl_sqlite
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+            logger.info("Added leases.%s", col_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_lease_agreement_columns: %s", exc)
+
+
 def ensure_walrus_anchor_migrations() -> None:
     """Walrus proof columns on audit_logs and escrow_holds."""
     from app.config import settings
@@ -489,6 +546,30 @@ def ensure_blockchain_tables() -> None:
             model.__table__.create(bind=engine, checkfirst=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("ensure_blockchain_tables (%s): %s", model.__tablename__, exc)
+    ensure_blockchain_wallet_source_column()
+
+
+def ensure_blockchain_wallet_source_column() -> None:
+    """platform vs external wallet on existing blockchain_wallets rows."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    try:
+        if not insp.has_table("blockchain_wallets", schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns("blockchain_wallets", schema=schema)}
+        if "wallet_source" in cols:
+            return
+        qual = f'"{schema}"."blockchain_wallets"' if schema else "blockchain_wallets"
+        url = settings.database_url.lower()
+        is_pg = "postgresql" in url
+        ddl = "VARCHAR(16) NOT NULL DEFAULT 'platform'" if is_pg else "VARCHAR(16) DEFAULT 'platform'"
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN wallet_source {ddl}"))
+        logger.info("Added blockchain_wallets.wallet_source")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_blockchain_wallet_source_column: %s", exc)
 
 
 def ensure_receipt_tables() -> None:
@@ -590,6 +671,8 @@ def run_incremental_migrations() -> None:
     ensure_rental_hub_messaging_migrations()
     ensure_unit_listing_filter_columns()
     ensure_government_schema_migrations()
+    ensure_verification_token_columns()
+    ensure_lease_agreement_columns()
     ensure_walrus_anchor_migrations()
     ensure_government_invitation_tables()
 

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.lease import Lease
 from app.models.property import Unit
 from app.models.tenant import Tenant
+from app.services.blockchain import walrus_anchor_service
 
 
 def _iso(value: date | datetime | None) -> Optional[str]:
@@ -57,6 +58,15 @@ def serialize_lease(lease: Lease) -> dict[str, Any]:
         "unit_number": unit.unit_number if unit else None,
         "property_name": prop.name if prop else None,
         "property_id": prop.id if prop else None,
+        **walrus_anchor_service.proof_fields(
+            getattr(lease, "walrus_blob_id", None),
+            content_hash=getattr(lease, "agreement_hash", None),
+        ),
+        "agreement_hash": getattr(lease, "agreement_hash", None),
+        "verification_token": getattr(lease, "verification_token", None),
+        "verification_url": verify_page_url(lease.verification_token)
+        if getattr(lease, "verification_token", None)
+        else None,
     }
 
 

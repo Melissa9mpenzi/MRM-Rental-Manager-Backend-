@@ -34,8 +34,9 @@ METHOD_PREFIX = {
 
 
 def _verify_base_url() -> str:
+    """Short QR URL — kind resolved server-side from token."""
     base = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
-    return f"{base}/verify/receipt"
+    return f"{base}/verify"
 
 
 def _method_prefix(method: Optional[str]) -> str:
@@ -443,32 +444,9 @@ def _can_access(user: User, row: SystemReceipt, db: Session) -> bool:
 
 
 def verify_public(db: Session, token: str) -> dict:
-    row = (
-        db.query(SystemReceipt)
-        .filter(SystemReceipt.verification_token == token, SystemReceipt.is_void == False)  # noqa: E712
-        .first()
-    )
-    if not row:
-        return {"valid": False, "message": "Receipt not found or has been voided."}
-    data = serialize(row)
-    return {
-        "valid": True,
-        "receipt_number": data["receipt_number"],
-        "status": data["status"],
-        "amount": data["amount"],
-        "currency": data["currency"],
-        "tenant_name": data["tenant_name"],
-        "property_name": data["property_name"],
-        "payment_method": data["payment_method"],
-        "period_label": data["period_label"],
-        "tx_hash": data["tx_hash"],
-        "explorer_url": data["explorer_url"],
-        "verification_hash": row.verification_hash,
-        "checksum": row.checksum,
-        "issued_at": data["issued_at"],
-        "smart_summary": data["smart_summary"],
-        "message": "Valid RentDirect UG receipt.",
-    }
+    from app.services import verification_service
+
+    return verification_service.verify_receipt(db, token)
 
 
 def ensure_pdf(db: Session, row: SystemReceipt, upload_dir: str) -> str:

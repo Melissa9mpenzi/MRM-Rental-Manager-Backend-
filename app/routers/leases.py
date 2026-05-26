@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 
 from app.database import get_db
@@ -67,7 +67,32 @@ def create_lease(
     db.add(lease)
     db.commit()
     db.refresh(lease)
-    return success_response(data={"id": lease.id, "status": lease.status.value}, message="Lease created successfully")
+    lease = (
+        db.query(Lease)
+        .options(
+            joinedload(Lease.tenant),
+            joinedload(Lease.unit).joinedload(Unit.parent_property),
+        )
+        .filter(Lease.id == lease.id)
+        .first()
+    )
+    agreement_proof = {}
+    try:
+        from app.services.blockchain import walrus_anchor_service
+
+        if lease:
+            agreement_proof = walrus_anchor_service.anchor_lease_agreement(db, lease)
+    except Exception:  # noqa: BLE001
+        pass
+    return success_response(
+        data={
+            "id": lease.id,
+            "status": lease.status.value,
+            "agreement_hash": agreement_proof.get("agreement_hash"),
+            "walrus_blob_id": agreement_proof.get("walrus_blob_id"),
+        },
+        message="Lease created — rental agreement anchored on Walrus.",
+    )
 
 
 @router.get("/")

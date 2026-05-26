@@ -26,13 +26,32 @@ logger = logging.getLogger(__name__)
 KYC_KINDS = ("id_front", "id_back", "selfie")
 
 
-def proof_fields(blob_id: Optional[str]) -> dict[str, Any]:
+def proof_fields(
+    blob_id: Optional[str],
+    *,
+    content_hash: Optional[str] = None,
+    walrus_live: Optional[bool] = None,
+) -> dict[str, Any]:
     bid = (blob_id or "").strip() or None
+    if bid and bid.startswith("hash:"):
+        content_hash = content_hash or bid[5:]
+        bid = None
+        walrus_live = False
+    live = walrus_live if walrus_live is not None else bool(bid)
     return {
         "walrus_blob_id": bid,
-        "walrus_url": walrus_service.public_url(bid or ""),
-        "walrus_demo_mode": bool(bid and bid.startswith("hash:")),
+        "walrus_url": walrus_service.public_url(bid),
+        "content_hash": content_hash,
+        "walrus_live": live,
+        "storage_type": "walrus" if live else "content_hash",
     }
+
+
+def _apply_store_result(target, result: walrus_service.WalrusStoreResult, *, blob_attr: str) -> dict[str, Any]:
+    setattr(target, blob_attr, result.walrus_blob_id)
+    if hasattr(target, "agreement_hash") and blob_attr == "walrus_blob_id":
+        target.agreement_hash = result.content_hash
+    return proof_fields(result.walrus_blob_id, content_hash=result.content_hash, walrus_live=result.walrus_live)
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -45,13 +64,13 @@ def _sha256_file(path: Path) -> Optional[str]:
     return _sha256_bytes(path.read_bytes())
 
 
-def _safe_store_json(payload: dict[str, Any]) -> str:
+def _safe_store_json(payload: dict[str, Any]) -> walrus_service.WalrusStoreResult:
     try:
-        return walrus_service.store_json(payload) or ""
+        return walrus_service.store_json(payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Walrus store_json failed: %s", exc)
-        digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-        return f"hash:{digest}"
+        digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        return walrus_service.WalrusStoreResult(content_hash=digest, walrus_blob_id=None, walrus_live=False)
 
 
 def kyc_document_hashes(user_id: int) -> dict[str, Optional[str]]:
@@ -94,11 +113,10 @@ def anchor_kyc_submission(db: Session, user: User) -> Optional[str]:
     if not kyc_document_hashes(user.id).get("id_front"):
         return getattr(user, "kyc_walrus_blob_id", None)
     payload = build_kyc_manifest(user, event="submitted")
-    manifest_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    blob_id = _safe_store_json(payload)
-    user.kyc_walrus_blob_id = blob_id
-    user.kyc_manifest_hash = manifest_hash
-    return blob_id
+    stored = _safe_store_json(payload)
+    user.kyc_walrus_blob_id = stored.walrus_blob_id
+    user.kyc_manifest_hash = stored.content_hash
+    return stored.walrus_blob_id
 
 
 def anchor_kyc_decision(
@@ -116,11 +134,10 @@ def anchor_kyc_decision(
         decision=decision,
         note=note,
     )
-    manifest_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    blob_id = _safe_store_json(payload)
-    user.kyc_walrus_blob_id = blob_id
-    user.kyc_manifest_hash = manifest_hash
-    return blob_id
+    stored = _safe_store_json(payload)
+    user.kyc_walrus_blob_id = stored.walrus_blob_id
+    user.kyc_manifest_hash = stored.content_hash
+    return stored.walrus_blob_id
 
 
 def build_property_packet(
@@ -174,11 +191,10 @@ def anchor_property_decision(
         decision=decision,
         note=note,
     )
-    packet_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    blob_id = _safe_store_json(payload)
-    prop.gov_walrus_blob_id = blob_id
-    prop.gov_packet_hash = packet_hash
-    return blob_id
+    stored = _safe_store_json(payload)
+    prop.gov_walrus_blob_id = stored.walrus_blob_id
+    prop.gov_packet_hash = stored.content_hash
+    return stored.walrus_blob_id
 
 
 def build_audit_payload(log: AuditLog, actor_name: Optional[str] = None) -> dict[str, Any]:
@@ -200,8 +216,51 @@ def build_audit_payload(log: AuditLog, actor_name: Optional[str] = None) -> dict
 
 def anchor_audit_log(db: Session, log: AuditLog, *, actor_name: Optional[str] = None) -> None:
     payload = build_audit_payload(log, actor_name=actor_name)
-    blob_id = _safe_store_json(payload)
-    log.walrus_blob_id = blob_id
+    stored = _safe_store_json(payload)
+    log.walrus_blob_id = stored.walrus_blob_id
+
+
+def build_lease_agreement_payload(lease: Lease) -> dict[str, Any]:
+    tenant = lease.tenant
+    unit = lease.unit
+    prop = unit.parent_property if unit else None
+    return {
+        "artifact_type": "rental_agreement",
+        "platform": "RentDirect UG",
+        "lease_id": lease.id,
+        "tenant_id": lease.tenant_id,
+        "owner_id": lease.owner_id,
+        "unit_id": lease.unit_id,
+        "property_name": prop.name if prop else None,
+        "tenant_name": tenant.full_name if tenant else None,
+        "start_date": lease.start_date.isoformat() if lease.start_date else None,
+        "end_date": lease.end_date.isoformat() if lease.end_date else None,
+        "monthly_rent_ugx": str(lease.monthly_rent),
+        "deposit_amount_ugx": str(lease.deposit_amount or 0),
+        "status": lease.status.value if hasattr(lease.status, "value") else str(lease.status),
+        "anchored_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def anchor_lease_agreement(db: Session, lease: Lease) -> dict[str, Any]:
+    """Walrus blob (when configured) + SHA-256 agreement hash — verifiable rental agreement."""
+    from app.services import verification_service
+
+    verification_service.ensure_lease_verify_token(lease)
+    payload = build_lease_agreement_payload(lease)
+    pre_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    stored = _safe_store_json({**payload, "agreement_hash": pre_hash})
+    lease.agreement_hash = stored.content_hash
+    lease.walrus_blob_id = stored.walrus_blob_id
+    db.commit()
+    from app.services.verification_service import verify_page_url
+
+    return {
+        "agreement_hash": stored.content_hash,
+        "verification_token": lease.verification_token,
+        "verification_url": verify_page_url(lease.verification_token),
+        **proof_fields(stored.walrus_blob_id, content_hash=stored.content_hash, walrus_live=stored.walrus_live),
+    }
 
 
 def build_escrow_lease_payload(hold: EscrowHold, lease: Optional[Lease] = None) -> dict[str, Any]:
@@ -222,9 +281,9 @@ def build_escrow_lease_payload(hold: EscrowHold, lease: Optional[Lease] = None) 
 
 def anchor_escrow_lease(db: Session, hold: EscrowHold, lease: Optional[Lease] = None) -> Optional[str]:
     payload = build_escrow_lease_payload(hold, lease)
-    blob_id = _safe_store_json(payload)
-    hold.walrus_lease_blob_id = blob_id
-    return blob_id
+    stored = _safe_store_json(payload)
+    hold.walrus_lease_blob_id = stored.walrus_blob_id
+    return stored.walrus_blob_id
 
 
 def build_escrow_release_payload(
@@ -253,9 +312,9 @@ def anchor_escrow_release(
     release_tx_digest: Optional[str] = None,
 ) -> Optional[str]:
     payload = build_escrow_release_payload(hold, release_tx_digest=release_tx_digest)
-    blob_id = _safe_store_json(payload)
-    hold.walrus_release_blob_id = blob_id
-    return blob_id
+    stored = _safe_store_json(payload)
+    hold.walrus_release_blob_id = stored.walrus_blob_id
+    return stored.walrus_blob_id
 
 
 def export_gov_audit_bundle(
@@ -277,8 +336,17 @@ def export_gov_audit_bundle(
         "entries": entries,
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
-    blob_id = _safe_store_json(payload)
-    return {"walrus_blob_id": blob_id, **proof_fields(blob_id), "entry_count": len(entries)}
+    stored = _safe_store_json(payload)
+    return {
+        "walrus_blob_id": stored.walrus_blob_id,
+        "content_hash": stored.content_hash,
+        **proof_fields(
+            stored.walrus_blob_id,
+            content_hash=stored.content_hash,
+            walrus_live=stored.walrus_live,
+        ),
+        "entry_count": len(entries),
+    }
 
 
 def walrus_inventory(db: Session) -> dict[str, Any]:

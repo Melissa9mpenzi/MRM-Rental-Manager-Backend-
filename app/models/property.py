@@ -42,6 +42,7 @@ class Property(Base):
     gov_verification_status = Column(String(24), nullable=False, default="pending")
     gov_walrus_blob_id = Column(String(256), nullable=True)
     gov_packet_hash = Column(String(64), nullable=True)
+    verification_token = Column(String(64), unique=True, nullable=True, index=True)
     created_at  = Column(DateTime, default=func.now(), server_default=func.now())
     updated_at  = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())
 

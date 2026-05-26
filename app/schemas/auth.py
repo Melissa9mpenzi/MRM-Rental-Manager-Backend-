@@ -91,6 +91,8 @@ class UserOut(BaseModel):
     kyc_manifest_hash: Optional[str] = None
     trusted_for_commerce: bool = False
     firebase_uid: Optional[str] = None
+    sui_address: Optional[str] = None
+    sui_wallet_auto: bool = False
     created_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
@@ -100,6 +102,14 @@ class FirebaseSignInBody(BaseModel):
     """Exchange a Firebase Auth ID token for an API session (JWT)."""
 
     id_token: str
+
+
+class PrivySignInBody(BaseModel):
+    """Exchange a Privy access token for an API session (JWT). Optional Sui address from embedded wallet."""
+
+    access_token: str
+    sui_address: Optional[str] = None
+    role: Optional[UserRole] = UserRole.tenant
 
 
 class TokenResponse(BaseModel):

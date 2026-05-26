@@ -366,6 +366,67 @@ def complete_checkout(
     return checkout
 
 
+def execute_platform_sui_checkout(db: Session, user: User, reference: str) -> dict:
+    """
+    Pay with the user's auto-provisioned RentDirect Sui wallet (no browser extension).
+    Signs and submits transfer server-side, then settles like confirm_sui_checkout.
+    """
+    from app.services.blockchain import wallet_provision
+
+    checkout = db.query(PaymentCheckout).filter(PaymentCheckout.reference == reference).first()
+    if not checkout:
+        raise error_response("Checkout not found.", status_code=404)
+    if checkout.provider != "sui":
+        raise error_response("Not a Sui checkout.", status_code=400)
+    if checkout.status == CheckoutStatus.completed:
+        return get_checkout(db, user, reference)
+
+    tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
+    if not tenant or checkout.tenant_id != tenant.id:
+        raise error_response("Access denied.", status_code=403)
+
+    try:
+        payload = json.loads(checkout.provider_payload or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    init_raw = payload if isinstance(payload, dict) else {}
+    if "amount_mist" not in init_raw and "raw" in init_raw:
+        init_raw = init_raw.get("raw") or {}
+
+    amount_mist = int(
+        init_raw.get("amount_mist") or sui_rpc.ugx_to_mist(Decimal(str(checkout.amount)))
+    )
+    treasury = (init_raw.get("treasury_address") or settings.sui_treasury_address or "").strip()
+    if not treasury:
+        raise error_response("Sui treasury not configured on API.", status_code=503)
+
+    wallet = blockchain_service.ensure_platform_wallet(db, user, request_faucet=True)
+    sender = wallet.get("sui_address")
+    if not sender:
+        raise error_response("Could not provision platform wallet.", status_code=500)
+
+    try:
+        digest = wallet_provision.execute_sui_transfer(
+            user.id,
+            recipient=treasury,
+            amount_mist=amount_mist,
+        )
+    except RuntimeError as exc:
+        raise error_response(str(exc), status_code=503) from exc
+    except ValueError as exc:
+        raise error_response(str(exc), status_code=400) from exc
+    except Exception as exc:
+        raise error_response(f"Sui payment failed: {exc}", status_code=502) from exc
+
+    return confirm_sui_checkout(
+        db,
+        user,
+        reference,
+        tx_digest=digest,
+        wallet_address=sender,
+    )
+
+
 def confirm_sui_checkout(
     db: Session,
     user: User,

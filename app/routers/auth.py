@@ -16,6 +16,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     VerifyEmailTokenBody,
     FirebaseSignInBody,
+    PrivySignInBody,
 )
 from app.services.auth_service import auth_service
 from app.services.email_service import (
@@ -71,9 +72,20 @@ def _clear_email_verification_fields(user: User) -> None:
     user.verification_otp_expiry = None
 
 
-def _user_auth_payload(user: User) -> dict:
+def _user_auth_payload(user: User, db: Session | None = None) -> dict:
     """JWT companion profile returned on login / me / firebase."""
-    return UserOut.model_validate(user).model_dump()
+    from app.services.blockchain import blockchain_service
+
+    payload = UserOut.model_validate(user).model_dump()
+    if db is not None:
+        try:
+            wallet = blockchain_service.ensure_platform_wallet(db, user, request_faucet=False)
+            payload["sui_address"] = wallet.get("sui_address")
+            payload["sui_wallet_auto"] = bool(wallet.get("auto_provisioned"))
+        except Exception:  # noqa: BLE001
+            payload["sui_address"] = None
+            payload["sui_wallet_auto"] = False
+    return payload
 
 
 def _apply_trust_after_email_verify(user: User) -> None:
@@ -305,7 +317,7 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
         "token_type": tokens.get("token_type", "bearer"),
-        "user": _user_auth_payload(user),
+        "user": _user_auth_payload(user, db),
         "needs_government_2fa": is_government_officer(user.role),
     }
     return success_response(data=payload_out)
@@ -403,6 +415,122 @@ def reset_password(payload: ResetPasswordRequest, db: Session = Depends(get_db))
     return {"message": "Password reset successfully. You can now log in."}
 
 
+@router.post("/privy", summary="Exchange Privy access token for API JWT (Google / Apple / email)")
+def privy_sign_in(body: PrivySignInBody, db: Session = Depends(get_db)):
+    """
+    Privy social login — can create a new tenant/landlord/agent account on first sign-in.
+    Links Privy embedded Sui wallet when ``sui_address`` is provided.
+    """
+    import secrets
+    from datetime import timedelta
+
+    from app.services import privy_token_service
+    from app.services.blockchain import blockchain_service
+    from app.schemas.auth import UserRegister
+
+    claims = privy_token_service.verify_access_token(body.access_token)
+    if not claims:
+        raise HTTPException(
+            status_code=503,
+            detail="Privy verification failed. Set PRIVY_APP_ID and PRIVY_APP_SECRET on the API.",
+        )
+
+    privy_did = str(claims.get("user_id") or "").strip()
+    if not privy_did:
+        raise error_response("Invalid Privy token.", status_code=400)
+
+    privy_user = privy_token_service.fetch_privy_user(privy_did)
+    profile = privy_token_service.extract_profile_from_privy_user(privy_user) if privy_user else {}
+    email = (profile.get("email") or "").strip().lower()
+    if not email:
+        raise error_response(
+            "Privy account has no email. Enable email collection in the Privy Dashboard for Google/Apple login.",
+            status_code=400,
+        )
+
+    sui_address = (body.sui_address or profile.get("sui_address") or "").strip() or None
+
+    is_new_user = False
+    user = db.query(User).filter(User.privy_did == privy_did).first()
+    if not user:
+        user = db.query(User).filter(User.email == email).first()
+
+    if user:
+        if not user.is_active:
+            raise error_response("Account is disabled. Contact support.", status_code=403)
+        if is_government_officer(user.role) or is_system_admin(user.role):
+            raise error_response(
+                "Government and system administrator accounts cannot use social sign-in.",
+                status_code=403,
+            )
+        user.email_verified = True
+        if not user.privy_did:
+            user.privy_did = privy_did[:128]
+        _apply_trust_after_email_verify(user)
+        db.commit()
+        db.refresh(user)
+    else:
+        role = body.role or UserRole.tenant
+        if role in (
+            UserRole.system_admin,
+            UserRole.gov_nira,
+            UserRole.gov_kcca,
+            UserRole.gov_ura,
+        ) or str(role).startswith("gov_"):
+            raise error_response(
+                "Government and system administrator accounts cannot self-register via social login.",
+                status_code=403,
+            )
+        if db.query(User).filter(User.email == email).first():
+            raise error_response(
+                "An account with this email already exists. Sign in with your password, then link Privy from settings.",
+                status_code=409,
+            )
+
+        token = generate_verification_token()
+        expiry = datetime.now(timezone.utc) + timedelta(minutes=15)
+        payload = UserRegister(
+            email=email,
+            full_name=profile.get("full_name") or email.split("@")[0],
+            phone="",
+            password=secrets.token_urlsafe(32),
+            role=role,
+        )
+        user = auth_service.create_user(
+            db,
+            payload,
+            verification_token=token,
+            token_expiry=expiry,
+        )
+        user.email_verified = True
+        user.privy_did = privy_did[:128]
+        _apply_trust_after_email_verify(user)
+        db.commit()
+        db.refresh(user)
+        is_new_user = True
+
+    if sui_address:
+        try:
+            blockchain_service.link_privy_wallet(db, user, sui_address)
+        except Exception:  # noqa: BLE001
+            blockchain_service.ensure_platform_wallet(db, user, request_faucet=False)
+    else:
+        blockchain_service.ensure_platform_wallet(db, user, request_faucet=False)
+
+    tokens = auth_service.create_tokens(db, user)
+    return success_response(
+        data={
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+            "token_type": tokens.get("token_type", "bearer"),
+            "user": _user_auth_payload(user, db),
+            "needs_government_2fa": is_government_officer(user.role),
+            "is_new_user": is_new_user,
+        },
+        message="Signed in with Privy.",
+    )
+
+
 @router.post("/firebase", summary="Exchange Firebase ID token for API JWT (optional)")
 def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
     claims = verify_firebase_id_token(body.id_token)
@@ -445,7 +573,7 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
             "access_token": tokens["access_token"],
             "refresh_token": tokens["refresh_token"],
             "token_type": tokens.get("token_type", "bearer"),
-            "user": _user_auth_payload(user),
+            "user": _user_auth_payload(user, db),
             "needs_government_2fa": is_government_officer(user.role),
         }
     )
@@ -453,5 +581,8 @@ def firebase_sign_in(body: FirebaseSignInBody, db: Session = Depends(get_db)):
 
 # ── ME ────────────────────────────────────────────────────────────
 @router.get("/me")
-def me(current_user: User = Depends(get_current_user)):
-    return success_response(data=_user_auth_payload(current_user))
+def me(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return success_response(data=_user_auth_payload(current_user, db))

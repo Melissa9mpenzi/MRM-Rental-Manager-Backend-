@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     # Firebase Admin — path to service account JSON (optional). Used by POST /auth/firebase.
     firebase_credentials_path: str = ""
 
+    # Privy — social login (Google/Apple/email) + embedded Sui wallets. https://www.privy.io/
+    privy_app_id: str = ""
+    privy_app_secret: str = ""
+
     # Payment gateway (Uganda): mtn_momo | pesapal | flutterwave | mock
     payment_gateway_provider: str = "mtn_momo"
     payment_allow_mock: bool = False
@@ -145,6 +149,10 @@ class Settings(BaseSettings):
         return url
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+
+    @property
+    def is_production(self) -> bool:
+        return (self.environment or "").strip().lower() == "production"
 
 
 settings = Settings()

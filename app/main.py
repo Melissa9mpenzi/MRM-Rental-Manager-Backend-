@@ -35,6 +35,7 @@ from app.routers import (
     blockchain,
     receipts,
     platform,
+    verify,
 )
 
 # Writable upload root (Vercel/Lambda only allow /tmp; project dir is read-only).
@@ -94,6 +95,17 @@ async def lifespan(app: FastAPI):
             gw.get("provider"),
             gw.get("mode"),
         )
+
+    if settings.is_production:
+        from app.services.production_readiness import production_readiness
+
+        ready = production_readiness()
+        for msg in ready.get("issues") or []:
+            log.error("PRODUCTION: %s", msg)
+        for msg in ready.get("warnings") or []:
+            log.warning("PRODUCTION: %s", msg)
+        if ready.get("ready_for_global_demo"):
+            log.info("PRODUCTION: ready for global demo (live payments + DB).")
 
     reminder_task = None
 
@@ -244,6 +256,7 @@ app.include_router(government_auth.router, prefix=API)
 app.include_router(blockchain.router,     prefix=API)
 app.include_router(receipts.router,         prefix=API)
 app.include_router(platform.router,       prefix=API)
+app.include_router(verify.router,         prefix=API)
 
 
 @app.get("/", tags=["Health"])

@@ -459,13 +459,26 @@ def nira_queue(
         .limit(min(limit, 200))
         .all()
     )
+    from app.services import verification_service
+    from app.services.verification_service import verify_page_url
+
     out = []
+    tokens_dirty = False
     for u in rows:
         risk = "low"
         if u.kyc_review_status == "rejected":
             risk = "high"
         elif u.kyc_review_status == "pending":
             risk = "medium"
+        compliance_token = None
+        compliance_url = None
+        if (u.kyc_review_status or "").lower() == "approved":
+            if not getattr(u, "compliance_verify_token", None):
+                verification_service.ensure_compliance_verify_token(u)
+                tokens_dirty = True
+            compliance_token = getattr(u, "compliance_verify_token", None)
+            if compliance_token:
+                compliance_url = verify_page_url(compliance_token)
         out.append(
             {
                 "user_id": u.id,
@@ -477,10 +490,17 @@ def nira_queue(
                 "face_match_pct": _kyc_face_match_pct(u),
                 "fraud_risk": risk,
                 "submitted_at": u.kyc_submitted_at.isoformat() if u.kyc_submitted_at else None,
-                **walrus_anchor_service.proof_fields(getattr(u, "kyc_walrus_blob_id", None)),
+                "compliance_verify_token": compliance_token,
+                "verification_url": compliance_url,
+                **walrus_anchor_service.proof_fields(
+                    getattr(u, "kyc_walrus_blob_id", None),
+                    content_hash=getattr(u, "kyc_manifest_hash", None),
+                ),
                 "kyc_manifest_hash": getattr(u, "kyc_manifest_hash", None),
             }
         )
+    if tokens_dirty:
+        db.commit()
     return {
         "items": out,
         "pending_in_database": _pending_kyc_count(db),
@@ -529,13 +549,22 @@ def nira_decide(
         decision=decision,
         note=note,
     )
+    if decision == "approved":
+        from app.services import verification_service
+
+        verification_service.ensure_compliance_verify_token(user)
     db.commit()
     db.refresh(user)
-    return {
+    out = {
         "user_id": user.id,
         "kyc_review_status": user.kyc_review_status,
         **walrus_anchor_service.proof_fields(user.kyc_walrus_blob_id),
     }
+    if getattr(user, "compliance_verify_token", None):
+        from app.services.verification_service import verify_page_url
+
+        out["verification_url"] = verify_page_url(user.compliance_verify_token)
+    return out
 
 
 def kcca_properties(db: Session, *, status: Optional[str] = None, limit: int = 50) -> list[dict]:
@@ -557,7 +586,10 @@ def kcca_properties(db: Session, *, status: Optional[str] = None, limit: int = 5
                 "status": getattr(p, "gov_verification_status", None) or "pending",
                 "is_published": bool(p.is_active),
                 "submitted_at": p.created_at.isoformat() if p.created_at else None,
-                **walrus_anchor_service.proof_fields(getattr(p, "gov_walrus_blob_id", None)),
+                **walrus_anchor_service.proof_fields(
+                    getattr(p, "gov_walrus_blob_id", None),
+                    content_hash=getattr(p, "gov_packet_hash", None),
+                ),
                 "gov_packet_hash": getattr(p, "gov_packet_hash", None),
             }
         )
@@ -591,6 +623,9 @@ def kcca_decide(
         table_name="properties",
         record_id=property_id,
     )
+    from app.services import verification_service
+
+    verification_service.ensure_property_verify_token(prop)
     walrus_anchor_service.anchor_property_decision(
         db,
         prop,
@@ -600,11 +635,18 @@ def kcca_decide(
     )
     db.commit()
     db.refresh(prop)
-    return {
+    from app.services.verification_service import verify_page_url
+
+    ret = {
         "property_id": prop.id,
         "gov_verification_status": prop.gov_verification_status,
-        **walrus_anchor_service.proof_fields(prop.gov_walrus_blob_id),
+        **walrus_anchor_service.proof_fields(
+            prop.gov_walrus_blob_id,
+            content_hash=getattr(prop, "gov_packet_hash", None),
+        ),
+        "verification_url": verify_page_url(prop.verification_token) if prop.verification_token else None,
     }
+    return ret
 
 
 def ura_rental_reports(db: Session, *, limit: int = 50) -> list[dict]:

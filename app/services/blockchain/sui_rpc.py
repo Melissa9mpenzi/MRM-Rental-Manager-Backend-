@@ -34,6 +34,19 @@ def _rpc(method: str, params: list[Any]) -> dict[str, Any]:
     return body.get("result") or {}
 
 
+def get_sui_balance(address: str) -> Optional[float]:
+    """Read SUI balance for an address from chain (returns SUI, not MIST)."""
+    addr = (address or "").strip()
+    if not addr.startswith("0x"):
+        return None
+    try:
+        result = _rpc("suix_getBalance", [addr, SUI_COIN_TYPE])
+        mist = int(result.get("totalBalance") or 0)
+        return mist / 1_000_000_000
+    except Exception:
+        return None
+
+
 def get_transaction(digest: str) -> dict[str, Any]:
     return _rpc(
         "sui_getTransactionBlock",
