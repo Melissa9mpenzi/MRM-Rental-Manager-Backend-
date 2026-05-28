@@ -17,6 +17,7 @@ from app.models.system_receipt import SystemReceipt
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.blockchain import sui_rpc, walrus_anchor_service
+from app.services.public_url_service import frontend_base_url
 
 
 def new_verify_token() -> str:
@@ -24,7 +25,7 @@ def new_verify_token() -> str:
 
 
 def verify_page_url(token: str, *, kind: Optional[str] = None) -> str:
-    base = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    base = frontend_base_url()
     if kind:
         return f"{base}/verify/{kind}/{token}"
     return f"{base}/verify/{token}"

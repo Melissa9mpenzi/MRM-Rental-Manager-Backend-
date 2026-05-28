@@ -7,6 +7,7 @@ from app.config import settings, database_url_looks_configured
 from app.services.blockchain import blockchain_service, walrus_service
 from app.services.gateway.config import gateway_public_status, is_gateway_configured, is_mock_allowed
 from app.services import privy_token_service
+from app.services.public_url_service import api_public_base_url, frontend_base_url
 
 
 def production_readiness() -> dict[str, Any]:
@@ -18,6 +19,17 @@ def production_readiness() -> dict[str, Any]:
 
     if not database_url_looks_configured():
         issues.append("DATABASE_URL is not configured.")
+    if settings.is_production:
+        fb = (settings.frontend_base_url or "").strip()
+        ab = (settings.api_public_base_url or "").strip()
+        if not fb or "localhost" in fb or "127.0.0.1" in fb or "0.0.0.0" in fb:
+            issues.append(
+                f"FRONTEND_BASE_URL points to localhost/missing. Set it to your deployed SPA URL (current effective: {frontend_base_url()})."
+            )
+        if not ab or "localhost" in ab or "127.0.0.1" in ab or "0.0.0.0" in ab:
+            issues.append(
+                f"API_PUBLIC_BASE_URL points to localhost/missing. Set it to your deployed API URL (current effective: {api_public_base_url()})."
+            )
     if settings.is_production and is_mock_allowed():
         issues.append("PAYMENT_ALLOW_MOCK must be false in production.")
     if not is_gateway_configured():

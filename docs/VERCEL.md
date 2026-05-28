@@ -24,15 +24,44 @@ If you see `"missing_run_init_db"`, run `python -m app.utils.init_db` locally ag
 | `FIREBASE_CREDENTIALS_JSON_BASE64` | base64-encoded Firebase service-account JSON (recommended on Vercel) |
 | `FIREBASE_CREDENTIALS_PATH` | absolute path to service-account JSON (non-serverless hosts) |
 | `FIREBASE_STORAGE_BUCKET` | `your-project-id.appspot.com` (optional, for persistent property images/videos) |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name (recommended free media hosting) |
+| `CLOUDINARY_API_KEY` | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret |
+| `CLOUDINARY_FOLDER` | optional folder prefix, e.g. `mrm` |
 
 Use the **`postgresql+psycopg2://`** prefix (not plain `postgresql://`) so SQLAlchemy uses the installed driver.
 
 ## Limitations
 
 - Local `/uploads` on Vercel are under `/tmp` and are **not persistent** across invocations.
-- For persistent media on Vercel, set `FIREBASE_CREDENTIALS_JSON_BASE64` + `FIREBASE_STORAGE_BUCKET`; uploads then use Firebase Storage URLs.
+- For persistent media on Vercel, configure Cloudinary (`CLOUDINARY_*`) or Firebase Storage (`FIREBASE_*`); uploads then use stable external URLs.
 - Cold starts can take several seconds; the first request after idle may be slow.
 - Run database migrations manually against Neon; do not rely on API boot migrations on Vercel.
+
+## Migrate old media to Firebase
+
+After enabling Firebase Storage, migrate already-uploaded local media paths (`/uploads/...`) in the database:
+
+1. Dry run (reports what can be migrated):
+   - `python -m app.utils.migrate_media_to_firebase`
+2. Apply migration:
+   - `python -m app.utils.migrate_media_to_firebase --apply`
+3. Optional smoke test on a few items first:
+   - `python -m app.utils.migrate_media_to_firebase --apply --limit 10`
+
+The migration updates media fields in properties, tenants, maintenance requests, message attachments, payment proofs, and receipt PDF paths to Firebase URLs.  
+If a local file is missing, that row is reported and skipped.
+
+## Migrate old media to Cloudinary
+
+If using Cloudinary, migrate existing local `/uploads/...` paths:
+
+1. Dry run:
+   - `python -m app.utils.migrate_media_to_cloudinary`
+2. Apply migration:
+   - `python -m app.utils.migrate_media_to_cloudinary --apply`
+3. Optional smoke test:
+   - `python -m app.utils.migrate_media_to_cloudinary --apply --limit 10`
 
 ## Health check
 

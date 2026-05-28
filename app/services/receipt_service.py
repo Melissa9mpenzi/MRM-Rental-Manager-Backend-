@@ -19,6 +19,7 @@ from app.models.property import Unit
 from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.services.receipt_pdf import build_receipt_pdf
+from app.services.public_url_service import frontend_base_url
 from app.utils.response import error_response
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -35,7 +36,7 @@ METHOD_PREFIX = {
 
 def _verify_base_url() -> str:
     """Short QR URL — kind resolved server-side from token."""
-    base = (settings.frontend_base_url or "http://localhost:5173").rstrip("/")
+    base = frontend_base_url()
     return f"{base}/verify"
 
 

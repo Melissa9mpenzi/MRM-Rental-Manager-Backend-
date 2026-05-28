@@ -1,9 +1,10 @@
-"""Unified media storage: Firebase bucket first, local /uploads fallback."""
+"""Unified media storage: Cloudinary/Firebase first, local /uploads fallback."""
 from __future__ import annotations
 
 import logging
 import os
 
+from app.services import cloudinary_storage_service
 from app.services import firebase_storage_service
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,12 @@ def save_media(
     content_type: str | None = None,
 ) -> str:
     object_path = f"{folder.strip('/')}/{filename}"
+
+    if cloudinary_storage_service.is_cloudinary_configured():
+        try:
+            return cloudinary_storage_service.upload_bytes(content, object_path, content_type=content_type)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cloudinary upload failed for %s. Falling back to next storage: %s", object_path, exc)
 
     if firebase_storage_service.is_firebase_storage_configured():
         try:

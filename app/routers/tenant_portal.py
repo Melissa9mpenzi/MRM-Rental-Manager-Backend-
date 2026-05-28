@@ -18,6 +18,7 @@ from app.schemas.payment import PaymentOut
 from app.schemas.tenant import TenantOut, TenantSelfUpdate
 from app.services.email_service import send_email
 from app.services.auth_service import auth_service
+from app.services.public_url_service import frontend_base_url
 from app.utils.response import success_response, error_response
 
 router = APIRouter(prefix="/tenant", tags=["Tenant Portal"])
@@ -246,7 +247,7 @@ def send_tenant_invite(
     db.commit()
     
     # Send invite email
-    invite_link = f"http://localhost:5174/tenant/accept-invite?token={token}&email={invite.email}"
+    invite_link = f"{frontend_base_url()}/tenant/accept-invite?token={token}&email={invite.email}"
     subject = "You're invited to access your rental account"
     html = f"""
     <div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:32px;background:#f4f7f7;border-radius:12px;">
