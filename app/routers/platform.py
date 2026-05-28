@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
-from app.services import activity_service, platform_data_service, platform_search_service, production_readiness
+from app.services import (
+    activity_service,
+    media_storage_service,
+    platform_data_service,
+    platform_search_service,
+    production_readiness,
+)
 from app.dependencies import require_roles
 from app.models.user import UserRole
 from app.services.gateway.config import gateway_public_status, is_gateway_configured
@@ -69,3 +75,9 @@ def platform_system_status(_: User = Depends(get_current_user)):
 def platform_readiness_public():
     """Public health + config checklist (no secrets). Use before global demos."""
     return success_response(data=production_readiness.production_readiness())
+
+
+@router.get("/media-storage-status")
+def platform_media_storage_status():
+    """Public storage backend status (no secrets)."""
+    return success_response(data=media_storage_service.storage_status())

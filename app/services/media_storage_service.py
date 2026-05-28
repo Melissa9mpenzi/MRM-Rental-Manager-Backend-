@@ -4,10 +4,35 @@ from __future__ import annotations
 import logging
 import os
 
+from app.config import settings
 from app.services import cloudinary_storage_service
 from app.services import firebase_storage_service
 
 logger = logging.getLogger(__name__)
+
+
+def storage_status() -> dict:
+    cloudinary_on = cloudinary_storage_service.is_cloudinary_configured()
+    firebase_on = firebase_storage_service.is_firebase_storage_configured()
+    active = "cloudinary" if cloudinary_on else ("firebase" if firebase_on else "local")
+    return {
+        "active_provider": active,
+        "providers": {
+            "cloudinary": {
+                "configured": cloudinary_on,
+                "cloud_name": (settings.cloudinary_cloud_name or "").strip(),
+                "folder": (settings.cloudinary_folder or "mrm").strip() or "mrm",
+            },
+            "firebase": {
+                "configured": firebase_on,
+                "bucket": (settings.firebase_storage_bucket or "").strip(),
+            },
+            "local": {
+                "configured": True,
+                "upload_dir": settings.upload_dir,
+            },
+        },
+    }
 
 
 def save_media(
