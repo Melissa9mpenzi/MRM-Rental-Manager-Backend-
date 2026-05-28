@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.conversation import Message, MessageKind, MessageThread, ThreadParticipant, ThreadType
 from app.models.property import Property, Unit
 from app.models.user import User
+from app.services.media_storage_service import save_media
 from app.services.trust_service import compute_trust_score, peer_profile, user_badges
 
 
@@ -392,9 +393,9 @@ def start_from_unit(
 def save_attachment(upload_dir: str, thread_id: int, filename: str, content: bytes) -> str:
     ext = os.path.splitext(filename)[1].lower() or ".bin"
     safe = f"{thread_id}_{uuid.uuid4().hex}{ext}"
-    folder = os.path.join(upload_dir, "messages", str(thread_id))
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, safe)
-    with open(path, "wb") as f:
-        f.write(content)
-    return f"/uploads/messages/{thread_id}/{safe}"
+    return save_media(
+        content=content,
+        folder=f"messages/{thread_id}",
+        filename=safe,
+        upload_dir=upload_dir,
+    )

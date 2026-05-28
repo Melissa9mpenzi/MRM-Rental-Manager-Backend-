@@ -2,15 +2,16 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
-import shutil, os, uuid
+import os
+import uuid
 from datetime import date
 
 from app.database import get_db
 from app.dependencies import require_landlord
 from app.models.user import User
 from app.schemas.tenant import TenantCreate, TenantUpdate
+from app.services.media_storage_service import save_media
 from app.services.tenant_service import tenant_service
-from app.config import settings
 from app.utils.response import success_response
 
 router = APIRouter(prefix="/tenants", tags=["Tenants"])
@@ -66,14 +67,16 @@ async def create_tenant(
     if deposit_receipt and deposit_receipt.filename:
         from app.runtime import upload_root
 
-        dest = os.path.join(upload_root(), "tenants")
-        os.makedirs(dest, exist_ok=True)
         ext = os.path.splitext(deposit_receipt.filename)[1]
         fname = f"{uuid.uuid4().hex}{ext}"
-        fpath = os.path.join(dest, fname)
-        with open(fpath, "wb") as f:
-            shutil.copyfileobj(deposit_receipt.file, f)
-        deposit_receipt_path = f"/uploads/tenants/{fname}"
+        content = await deposit_receipt.read()
+        deposit_receipt_path = save_media(
+            content=content,
+            folder="tenants",
+            filename=fname,
+            upload_dir=upload_root(),
+            content_type=deposit_receipt.content_type,
+        )
 
     data = TenantCreate(
         unit_id=unit_id,

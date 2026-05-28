@@ -1,4 +1,5 @@
-import os, uuid, shutil
+import os
+import uuid
 from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentUpdate, PaymentOut
 from app.schemas.payment_gateway import InitiateCheckoutBody
 from app.services import payment_service, payment_gateway_service
+from app.services.media_storage_service import save_media
 from app.services.gateway.config import gateway_public_status, is_mock_allowed
 from app.config import settings
 from app.utils.response import success_response, error_response
@@ -206,15 +208,18 @@ async def upload_proof(
 
     from app.runtime import upload_root
 
-    dest_dir = os.path.join(upload_root(), "receipts", "proofs")
-    os.makedirs(dest_dir, exist_ok=True)
     ext = os.path.splitext(file.filename)[1].lower() or ".jpg"
     fname = f"proof_{payment_id:05d}_{uuid.uuid4().hex[:8]}{ext}"
-    with open(os.path.join(dest_dir, fname), "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    content = await file.read()
 
     # Store proof path in the payment reference field if not already set
-    proof_url = f"/uploads/receipts/proofs/{fname}"
+    proof_url = save_media(
+        content=content,
+        folder="receipts/proofs",
+        filename=fname,
+        upload_dir=upload_root(),
+        content_type=file.content_type,
+    )
     if not p.reference:
         p.reference = proof_url
     # Always store the latest proof path in notes if reference already used
