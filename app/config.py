@@ -86,6 +86,12 @@ class Settings(BaseSettings):
     # Firebase Storage bucket (e.g. your-project-id.appspot.com) for media uploads.
     firebase_storage_bucket: str = ""
 
+    # Cloudinary media storage (recommended free-tier option for hackathon)
+    cloudinary_cloud_name: str = ""
+    cloudinary_api_key: str = ""
+    cloudinary_api_secret: str = ""
+    cloudinary_folder: str = "mrm"
+
     # Privy — social login (Google/Apple/email) + embedded Sui wallets. https://www.privy.io/
     privy_app_id: str = ""
     privy_app_secret: str = ""
