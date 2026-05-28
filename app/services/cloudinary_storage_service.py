@@ -44,13 +44,13 @@ def upload_bytes(content: bytes, object_path: str, *, content_type: str | None =
     public_id = object_path.strip().lstrip("/").replace("\\", "/")
     if "." in public_id.rsplit("/", 1)[-1]:
         public_id = public_id.rsplit(".", 1)[0]
-    if folder:
-        public_id = f"{folder}/{public_id}"
 
     uploaded = cloudinary.uploader.upload(
         content,
         resource_type=_resource_type(content_type, object_path),
         public_id=public_id,
+        asset_folder=folder or None,
+        use_asset_folder_as_public_id_prefix=True if folder else False,
         overwrite=True,
         invalidate=False,
         unique_filename=False,
