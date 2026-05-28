@@ -5,7 +5,6 @@ Handles CRUD for maintenance requests scoped to the owning landlord.
 from __future__ import annotations
 
 import os
-import shutil
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -15,6 +14,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models.maintenance import MaintenanceRequest
 from app.models.property import Unit, Property
+from app.services.media_storage_service import save_media
 
 
 VALID_STATUSES = {"open", "in_progress", "resolved", "closed"}
@@ -116,13 +116,16 @@ def create_request(
 
     photo_path = None
     if photo and photo.filename:
-        dest_dir = os.path.join(upload_dir, "maintenance")
-        os.makedirs(dest_dir, exist_ok=True)
         ext = os.path.splitext(photo.filename)[1].lower() or ".jpg"
         fname = f"{uuid.uuid4().hex}{ext}"
-        with open(os.path.join(dest_dir, fname), "wb") as f:
-            shutil.copyfileobj(photo.file, f)
-        photo_path = f"/uploads/maintenance/{fname}"
+        content = photo.file.read()
+        photo_path = save_media(
+            content=content,
+            folder="maintenance",
+            filename=fname,
+            upload_dir=upload_dir,
+            content_type=photo.content_type,
+        )
 
     req = MaintenanceRequest(
         unit_id=unit_id,

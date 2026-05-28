@@ -449,9 +449,45 @@ def verify_public(db: Session, token: str) -> dict:
     return verification_service.verify_receipt(db, token)
 
 
+def _pdf_fs_path(web_path: str, upload_dir: str) -> str:
+    import os
+
+    rel = web_path.removeprefix("/uploads/").lstrip("/")
+    return os.path.join(upload_dir, rel)
+
+
+def get_pdf_content(db: Session, row: SystemReceipt, upload_dir: str) -> bytes:
+    """Return PDF bytes; regenerate when missing (required on Vercel /tmp)."""
+    import os
+
+    from app.runtime import is_serverless
+    from app.services.receipt_pdf import build_receipt_pdf, build_receipt_pdf_bytes
+
+    if row.pdf_path and not is_serverless():
+        full = _pdf_fs_path(row.pdf_path, upload_dir)
+        if os.path.isfile(full):
+            with open(full, "rb") as f:
+                return f.read()
+
+    network = (settings.sui_network or "devnet").lower()
+    pdf_dict = _to_pdf_dict(row, network=network)
+    verify_url = f"{_verify_base_url()}/{row.verification_token}"
+    content = build_receipt_pdf_bytes(pdf_dict, verify_url=verify_url)
+
+    if not is_serverless():
+        row.pdf_path = build_receipt_pdf(pdf_dict, verify_url=verify_url, upload_dir=upload_dir)
+        db.commit()
+
+    return content
+
+
 def ensure_pdf(db: Session, row: SystemReceipt, upload_dir: str) -> str:
     if row.pdf_path:
-        return row.pdf_path
+        import os
+
+        full = _pdf_fs_path(row.pdf_path, upload_dir)
+        if os.path.isfile(full):
+            return row.pdf_path
     network = (settings.sui_network or "devnet").lower()
     pdf_dict = _to_pdf_dict(row, network=network)
     verify_url = f"{_verify_base_url()}/{row.verification_token}"

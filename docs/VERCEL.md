@@ -21,12 +21,16 @@ If you see `"missing_run_init_db"`, run `python -m app.utils.init_db` locally ag
 | `FRONTEND_BASE_URL` | `https://mrm-rental-manager-frontend-pink.vercel.app` |
 | `API_PUBLIC_BASE_URL` | `https://mrm-rental-manager-backend.vercel.app` |
 | `SKIP_STARTUP_MIGRATIONS` | `false` (or omit — migrations run on cold start) |
+| `FIREBASE_CREDENTIALS_JSON_BASE64` | base64-encoded Firebase service-account JSON (recommended on Vercel) |
+| `FIREBASE_CREDENTIALS_PATH` | absolute path to service-account JSON (non-serverless hosts) |
+| `FIREBASE_STORAGE_BUCKET` | `your-project-id.appspot.com` (optional, for persistent property images/videos) |
 
 Use the **`postgresql+psycopg2://`** prefix (not plain `postgresql://`) so SQLAlchemy uses the installed driver.
 
 ## Limitations
 
-- Uploads are stored under `/tmp` and are **not persistent** across invocations. Use object storage for production file hosting.
+- Local `/uploads` on Vercel are under `/tmp` and are **not persistent** across invocations.
+- For persistent media on Vercel, set `FIREBASE_CREDENTIALS_JSON_BASE64` + `FIREBASE_STORAGE_BUCKET`; uploads then use Firebase Storage URLs.
 - Cold starts can take several seconds; the first request after idle may be slow.
 - Run database migrations manually against Neon; do not rely on API boot migrations on Vercel.
 

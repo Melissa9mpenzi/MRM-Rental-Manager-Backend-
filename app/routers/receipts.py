@@ -1,8 +1,9 @@
 """Enterprise receipt API — issue, verify, PDF, email, admin."""
+import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -13,6 +14,7 @@ from app.services import receipt_service
 from app.utils.response import success_response
 
 router = APIRouter(tags=["Receipts"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/receipts")
@@ -63,24 +65,28 @@ def download_receipt_pdf(
 ):
     from app.models.system_receipt import SystemReceipt
     from app.runtime import upload_root
+    from app.utils.response import error_response
 
     row = db.query(SystemReceipt).filter(SystemReceipt.id == receipt_id).first()
     if not row:
-        from app.utils.response import error_response
-
         raise error_response("Receipt not found.", status_code=404)
     if not receipt_service._can_access(current_user, row, db):
-        from app.utils.response import error_response
-
         raise error_response("Access denied.", status_code=403)
 
-    root = upload_root()
-    pdf_path = receipt_service.ensure_pdf(db, row, root)
-    full = pdf_path.replace("/uploads/", f"{root}/")
-    return FileResponse(
-        full,
+    try:
+        pdf_bytes = receipt_service.get_pdf_content(db, row, upload_root())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("receipt pdf generation failed for id=%s", receipt_id)
+        raise HTTPException(
+            status_code=500,
+            detail="Could not generate receipt PDF. Try again shortly.",
+        ) from exc
+
+    safe_name = (row.receipt_number or f"receipt-{receipt_id}").replace("/", "-")
+    return Response(
+        content=pdf_bytes,
         media_type="application/pdf",
-        filename=f"{row.receipt_number}.pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.pdf"'},
     )
 
 

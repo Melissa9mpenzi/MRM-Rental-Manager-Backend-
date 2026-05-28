@@ -1,4 +1,4 @@
-import os, uuid, shutil
+import os, uuid
 from fastapi import APIRouter, Depends, Query, status, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List
@@ -11,6 +11,7 @@ from app.schemas.property import (
     UnitCreate, UnitUpdate, UnitStatusUpdate, UnitOut,
 )
 from app.services import property_service
+from app.services.media_storage_service import save_media
 from app.config import settings
 from app.utils.response import success_response, error_response
 
@@ -81,11 +82,14 @@ async def upload_property_photo(
     filename = f"{uuid.uuid4().hex}.{ext}"
     from app.runtime import upload_root
 
-    save_dir = os.path.join(upload_root(), "properties")
-    os.makedirs(save_dir, exist_ok=True)
-    with open(os.path.join(save_dir, filename), "wb") as buf:
-        shutil.copyfileobj(file.file, buf)
-    photo_url = f"/uploads/properties/{filename}"
+    content = await file.read()
+    photo_url = save_media(
+        content=content,
+        folder="properties",
+        filename=filename,
+        upload_dir=upload_root(),
+        content_type=file.content_type,
+    )
     prop = property_service.set_property_photo(db, property_id, photo_url, current_user.id)
     return success_response(data=_detail(prop), message="Property photo updated successfully")
 
@@ -123,11 +127,13 @@ async def upload_property_video(
     filename = f"{uuid.uuid4().hex}.{ext}"
     from app.runtime import upload_root
 
-    save_dir = os.path.join(upload_root(), "properties", "videos")
-    os.makedirs(save_dir, exist_ok=True)
-    with open(os.path.join(save_dir, filename), "wb") as buf:
-        buf.write(content)
-    video_url = f"/uploads/properties/videos/{filename}"
+    video_url = save_media(
+        content=content,
+        folder="properties/videos",
+        filename=filename,
+        upload_dir=upload_root(),
+        content_type=file.content_type,
+    )
     prop = property_service.set_property_video(db, property_id, video_url, current_user.id)
     return success_response(data=_detail(prop), message="Property video uploaded successfully")
 

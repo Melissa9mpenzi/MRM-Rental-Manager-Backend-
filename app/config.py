@@ -81,6 +81,10 @@ class Settings(BaseSettings):
 
     # Firebase Admin — path to service account JSON (optional). Used by POST /auth/firebase.
     firebase_credentials_path: str = ""
+    # Vercel-safe alternative: base64(JSON service account). Preferred for serverless.
+    firebase_credentials_json_base64: str = ""
+    # Firebase Storage bucket (e.g. your-project-id.appspot.com) for media uploads.
+    firebase_storage_bucket: str = ""
 
     # Privy — social login (Google/Apple/email) + embedded Sui wallets. https://www.privy.io/
     privy_app_id: str = ""
