@@ -34,6 +34,20 @@ Use the **`postgresql+psycopg2://`** prefix (not plain `postgresql://`) so SQLAl
 - Cold starts can take several seconds; the first request after idle may be slow.
 - Run database migrations manually against Neon; do not rely on API boot migrations on Vercel.
 
+## Migrate old media to Firebase
+
+After enabling Firebase Storage, migrate already-uploaded local media paths (`/uploads/...`) in the database:
+
+1. Dry run (reports what can be migrated):
+   - `python -m app.utils.migrate_media_to_firebase`
+2. Apply migration:
+   - `python -m app.utils.migrate_media_to_firebase --apply`
+3. Optional smoke test on a few items first:
+   - `python -m app.utils.migrate_media_to_firebase --apply --limit 10`
+
+The migration updates media fields in properties, tenants, maintenance requests, message attachments, payment proofs, and receipt PDF paths to Firebase URLs.  
+If a local file is missing, that row is reported and skipped.
+
 ## Health check
 
 After deploy, open `https://<your-project>.vercel.app/health` — expect `{"status":"ok"}`.
