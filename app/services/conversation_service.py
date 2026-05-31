@@ -399,3 +399,80 @@ def save_attachment(upload_dir: str, thread_id: int, filename: str, content: byt
         filename=safe,
         upload_dir=upload_dir,
     )
+
+
+def start_call_session(
+    db: Session,
+    thread_id: int,
+    user_id: int,
+    *,
+    mode: str = "video",
+) -> dict[str, Any] | None:
+    """Create a Jitsi Meet room and log a system message in the thread."""
+    import secrets
+
+    thread = (
+        db.query(MessageThread)
+        .options(joinedload(MessageThread.participants))
+        .filter(MessageThread.id == thread_id)
+        .first()
+    )
+    if not thread or user_id not in _participant_ids(thread):
+        return None
+    room = f"rentdirect-{thread_id}-{secrets.token_hex(4)}"
+    base = f"https://meet.jit.si/{room}"
+    if mode == "voice":
+        room_url = f"{base}#config.startWithVideoMuted=true&config.startAudioOnly=true"
+        label = "Voice call"
+    else:
+        room_url = base
+        label = "Video call"
+    user = db.query(User).filter(User.id == user_id).first()
+    name = (user.full_name if user else "Participant").replace(" ", "%20")
+    join_url = f"{room_url}#userInfo.displayName={name}"
+    post_system_message(
+        db,
+        thread_id,
+        "call_started",
+        f"{label} room ready. Join: {join_url}",
+    )
+    return {"mode": mode, "room_name": room, "join_url": join_url}
+
+
+def list_threads_admin(db: Session, *, limit: int = 100) -> List[dict[str, Any]]:
+    rows = (
+        db.query(MessageThread)
+        .options(joinedload(MessageThread.participants), joinedload(MessageThread.messages))
+        .order_by(MessageThread.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    out: List[dict[str, Any]] = []
+    for t in rows:
+        tt = _thread_type_value(t)
+        last = ""
+        if t.messages:
+            lm = max(t.messages, key=lambda m: m.created_at or datetime.min)
+            last = (lm.body or "")[:100]
+        participant_ids = [p.user_id for p in t.participants]
+        users = db.query(User).filter(User.id.in_(participant_ids)).all() if participant_ids else []
+        out.append(
+            {
+                "id": t.id,
+                "thread_type": tt,
+                "subject": t.subject or t.listing_title,
+                "participants": [
+                    {
+                        "id": u.id,
+                        "name": u.full_name,
+                        "email": u.email,
+                        "role": u.role.value if hasattr(u.role, "value") else str(u.role),
+                    }
+                    for u in users
+                ],
+                "last_message": last,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+                "archived": t.archived_at is not None,
+            }
+        )
+    return out

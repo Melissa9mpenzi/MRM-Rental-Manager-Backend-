@@ -34,7 +34,8 @@ Use the **`postgresql+psycopg2://`** prefix (not plain `postgresql://`) so SQLAl
 ## Limitations
 
 - Local `/uploads` on Vercel are under `/tmp` and are **not persistent** across invocations.
-- For persistent media on Vercel, configure Cloudinary (`CLOUDINARY_*`) or Firebase Storage (`FIREBASE_*`); uploads then use stable external URLs.
+- **Required on Vercel:** Cloudinary (`CLOUDINARY_*`). The API does not persist media to `./uploads` in production.
+- New property photos/videos are stored in Cloudinary and saved in the DB as `https://res.cloudinary.com/...` URLs.
 - Cold starts can take several seconds; the first request after idle may be slow.
 - Run database migrations manually against Neon; do not rely on API boot migrations on Vercel.
 

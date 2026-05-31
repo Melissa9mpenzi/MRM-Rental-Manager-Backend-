@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_system_admin, require_roles
+from app.dependencies import require_system_admin, require_roles, get_current_user
 from app.models.user import User, UserRole
 from app.schemas.auth import UserOut
 from app.services import agent_crm_service
@@ -344,3 +344,125 @@ def staff_analytics(
 ):
     owner = _staff_owner(current_user)
     return success_response(data=agent_crm_service.analytics(db, owner))
+
+
+class AnnouncementBody(BaseModel):
+    title: str
+    body: str
+    audience: str = "all"
+    is_published: bool = True
+
+
+class SupportTicketBody(BaseModel):
+    subject: str
+    body: str
+    priority: str = "normal"
+
+
+class SupportStatusBody(BaseModel):
+    status: str
+
+
+@router.get("/admin/announcements")
+def list_announcements(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    from app.models.platform_ops import PlatformAnnouncement
+
+    rows = db.query(PlatformAnnouncement).order_by(PlatformAnnouncement.created_at.desc()).limit(100).all()
+    return success_response(
+        data=[
+            {
+                "id": r.id,
+                "title": r.title,
+                "body": r.body,
+                "audience": r.audience,
+                "is_published": r.is_published,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    )
+
+
+@router.post("/admin/announcements", status_code=201)
+def create_announcement(
+    payload: AnnouncementBody,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_system_admin),
+):
+    from app.models.platform_ops import PlatformAnnouncement
+
+    row = PlatformAnnouncement(
+        title=payload.title.strip(),
+        body=payload.body.strip(),
+        audience=payload.audience.strip() or "all",
+        is_published=payload.is_published,
+        created_by_id=admin.id,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return success_response(data={"id": row.id}, message="Announcement published.")
+
+
+@router.get("/admin/support-tickets")
+def list_support_tickets(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    from app.models.platform_ops import SupportTicket
+
+    rows = db.query(SupportTicket).order_by(SupportTicket.updated_at.desc()).limit(200).all()
+    return success_response(
+        data=[
+            {
+                "id": r.id,
+                "user_id": r.user_id,
+                "subject": r.subject,
+                "body": r.body,
+                "status": r.status,
+                "priority": r.priority,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    )
+
+
+@router.post("/support-tickets", status_code=201)
+def create_support_ticket(
+    payload: SupportTicketBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.platform_ops import SupportTicket
+
+    row = SupportTicket(
+        user_id=current_user.id,
+        subject=payload.subject.strip(),
+        body=payload.body.strip(),
+        priority=payload.priority.strip() or "normal",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return success_response(data={"id": row.id}, message="Support ticket submitted.")
+
+
+@router.patch("/admin/support-tickets/{ticket_id}")
+def update_support_ticket(
+    ticket_id: int,
+    payload: SupportStatusBody,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_system_admin),
+):
+    from app.models.platform_ops import SupportTicket
+
+    row = db.query(SupportTicket).filter(SupportTicket.id == ticket_id).first()
+    if not row:
+        raise HTTPException(404, "Ticket not found.")
+    row.status = payload.status.strip()
+    db.commit()
+    return success_response(data={"id": row.id, "status": row.status})

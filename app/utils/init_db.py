@@ -149,6 +149,8 @@ def ensure_users_column_migrations() -> None:
         ("gov_suspended_at", "TIMESTAMP WITHOUT TIME ZONE NULL", "DATETIME NULL", "TIMESTAMP NULL"),
         ("kyc_walrus_blob_id", "VARCHAR(256) NULL", "VARCHAR(256) NULL", "VARCHAR(256) NULL"),
         ("kyc_manifest_hash", "VARCHAR(64) NULL", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+        ("totp_secret", "VARCHAR(64) NULL", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+        ("totp_enabled", "BOOLEAN NOT NULL DEFAULT false", "INTEGER NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT false"),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _user_column_ddls:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)
@@ -660,6 +662,16 @@ def ensure_rental_hub_messaging_migrations() -> None:
         logger.warning("ensure_rental_hub_messaging_migrations: %s", exc)
 
 
+def ensure_platform_ops_tables() -> None:
+    from app.models.platform_ops import PlatformAnnouncement, SupportTicket
+
+    for model in (PlatformAnnouncement, SupportTicket):
+        try:
+            model.__table__.create(bind=engine, checkfirst=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ensure_platform_ops_tables (%s): %s", model.__tablename__, exc)
+
+
 def run_incremental_migrations() -> None:
     """ALTER existing DBs — safe to run repeatedly."""
     ensure_users_column_migrations()
@@ -675,6 +687,7 @@ def run_incremental_migrations() -> None:
     ensure_lease_agreement_columns()
     ensure_walrus_anchor_migrations()
     ensure_government_invitation_tables()
+    ensure_platform_ops_tables()
 
 
 def _startup_stamp_path() -> Path:

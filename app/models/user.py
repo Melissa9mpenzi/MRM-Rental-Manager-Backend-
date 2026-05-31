@@ -89,6 +89,9 @@ class User(Base):
     gov_suspension_reason = Column(String(500), nullable=True)
     gov_suspended_at = Column(DateTime, nullable=True)
 
+    totp_secret = Column(String(64), nullable=True)
+    totp_enabled = Column(Boolean, nullable=False, default=False)
+
     last_login      = Column(DateTime, nullable=True)
     created_at      = Column(DateTime, server_default=func.now())
     updated_at      = Column(DateTime, server_default=func.now(), onupdate=func.now())

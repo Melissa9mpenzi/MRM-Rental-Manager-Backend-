@@ -357,6 +357,14 @@ def admin_dashboard(db: Session, user: User) -> dict[str, Any]:
             "deployed_at": None,
         })
 
+    wallet_info = get_primary_wallet(db, user)
+    wallet_addr = wallet_info.get("sui_address")
+    wallet_balance = None
+    if wallet_addr:
+        from app.services.blockchain.sui_rpc import get_sui_balance
+
+        wallet_balance = get_sui_balance(wallet_addr)
+
     return {
         **status,
         "totals": {
@@ -369,7 +377,7 @@ def admin_dashboard(db: Session, user: User) -> dict[str, Any]:
         },
         "wallet": {
             "sui_balance": wallet_balance,
-            "sui_address": get_primary_wallet(db, user).get("sui_address"),
+            "sui_address": wallet_addr,
             "escrow_balance": round(
                 sum(_mist_to_sui_display(e.get("amount_ugx")) for e in escrows if e.get("status") in ("funded", "held")),
                 4,

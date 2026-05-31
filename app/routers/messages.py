@@ -206,3 +206,36 @@ def start_thread(
             raise error_response("You cannot message your own listing.", status_code=400)
         raise error_response("Could not start conversation.", status_code=400)
     return success_response(data={"thread_id": thread.id, "message_id": msg.id})
+
+
+class CallSessionBody(BaseModel):
+    mode: str = "video"
+
+
+@router.post("/threads/{thread_id}/call-session")
+def start_call_session(
+    thread_id: int,
+    body: CallSessionBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    data = conversation_service.start_call_session(
+        db, thread_id, current_user.id, mode=body.mode
+    )
+    if not data:
+        raise error_response("Thread not found or access denied.", status_code=404)
+    return success_response(data=data)
+
+
+@router.get("/admin/threads")
+def admin_list_threads(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.models.user import is_system_admin
+
+    if not is_system_admin(current_user.role):
+        raise error_response("System admin only.", status_code=403)
+    data = conversation_service.list_threads_admin(db, limit=limit)
+    return success_response(data=data)

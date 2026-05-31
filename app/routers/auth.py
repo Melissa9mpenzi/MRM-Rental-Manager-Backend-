@@ -305,6 +305,23 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
     if not user.email_verified:
         raise error_response("Please verify your email before logging in.", status_code=403)
 
+    if getattr(user, "totp_enabled", False) and user.totp_secret:
+        from jose import jwt
+
+        expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+        pending = jwt.encode(
+            {"sub": str(user.id), "type": "totp_pending", "exp": expire},
+            settings.secret_key,
+            algorithm=settings.algorithm,
+        )
+        return success_response(
+            data={
+                "needs_totp": True,
+                "totp_pending_token": pending,
+                "user": _user_auth_payload(user, db),
+            }
+        )
+
     try:
         tokens = auth_service.create_tokens(db, user)
     except SQLAlchemyError as exc:
@@ -313,6 +330,37 @@ def login(payload: UserLogin, db: Session = Depends(get_db)):
         msg, code = database_error_response(exc)
         raise error_response(msg, status_code=code)
 
+    payload_out = {
+        "access_token": tokens["access_token"],
+        "refresh_token": tokens["refresh_token"],
+        "token_type": tokens.get("token_type", "bearer"),
+        "user": _user_auth_payload(user, db),
+        "needs_government_2fa": is_government_officer(user.role),
+    }
+    return success_response(data=payload_out)
+
+
+class VerifyTotpLoginBody(BaseModel):
+    totp_pending_token: str
+    code: str
+
+
+@router.post("/verify-totp")
+def verify_totp_login(body: VerifyTotpLoginBody, db: Session = Depends(get_db)):
+    from app.services.totp_service import verify_code
+
+    payload = decode_token(body.totp_pending_token)
+    if not payload or payload.get("type") != "totp_pending":
+        raise error_response("Session expired. Sign in again.", status_code=401)
+    user_id = payload.get("sub")
+    if not user_id:
+        raise error_response("Invalid session.", status_code=401)
+    user = db.query(User).filter(User.id == int(user_id)).first()
+    if not user or not user.totp_enabled or not user.totp_secret:
+        raise error_response("Two-factor auth not configured.", status_code=400)
+    if not verify_code(user.totp_secret, body.code):
+        raise error_response("Invalid authenticator code.", status_code=401)
+    tokens = auth_service.create_tokens(db, user)
     payload_out = {
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],

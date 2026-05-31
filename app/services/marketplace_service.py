@@ -59,7 +59,7 @@ def _serialize_unit(
         "verified": bool(badges and badges.get("marketplace_live")),
         "gov_verification_status": (prop.gov_verification_status or "pending").lower(),
         "compliance": compliance_badges_public(badges or {}),
-        "image": prop.photo_path or "/images/hero-villa.jpg",
+        "image": prop.photo_path or None,
         "desc": (unit.description or prop.description or "").strip() or f"{prop.name} — {ut_val.replace('_', ' ')}.",
         "parking": parking,
         "unit_type": ut_val,

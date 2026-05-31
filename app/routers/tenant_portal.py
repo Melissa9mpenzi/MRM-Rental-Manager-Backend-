@@ -187,6 +187,7 @@ def get_my_lease(
             "id": property_obj.id,
             "name": property_obj.name,
             "address": property_obj.address,
+            "photo_path": property_obj.photo_path,
         } if property_obj else None,
     }
     return success_response(data=data)

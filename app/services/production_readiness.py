@@ -6,7 +6,7 @@ from typing import Any
 from app.config import settings, database_url_looks_configured
 from app.services.blockchain import blockchain_service, walrus_service
 from app.services.gateway.config import gateway_public_status, is_gateway_configured, is_mock_allowed
-from app.services import privy_token_service
+from app.services import cloudinary_storage_service, privy_token_service
 from app.services.public_url_service import api_public_base_url, frontend_base_url
 
 
@@ -42,6 +42,10 @@ def production_readiness() -> dict[str, Any]:
         warnings.append("SUI_TREASURY_ADDRESS unset — on-chain Sui rent payments disabled.")
     if not (settings.secret_key or "").strip() or settings.secret_key == "change-me-in-production-use-long-random-string":
         issues.append("SECRET_KEY must be a strong random value in production.")
+    if settings.is_production and not cloudinary_storage_service.is_cloudinary_configured():
+        issues.append(
+            "CLOUDINARY_* not configured — property images/videos will fail (local /uploads is not persistent on Vercel)."
+        )
     if not privy_token_service.is_privy_configured() and not (settings.firebase_credentials_path or "").strip():
         warnings.append("Neither Privy nor Firebase configured for social login.")
     if not walrus_service.is_walrus_configured():

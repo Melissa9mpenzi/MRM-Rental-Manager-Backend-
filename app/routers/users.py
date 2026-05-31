@@ -175,3 +175,76 @@ def change_password(
     auth_service.set_password(db, current_user, new_password)
     return {"message": "Password changed successfully."}
 
+
+class TotpVerifyBody(BaseModel):
+    code: str
+
+
+@router.get("/me/totp/status")
+def totp_status(current_user: User = Depends(get_current_user)):
+    return {"enabled": bool(current_user.totp_enabled)}
+
+
+@router.post("/me/totp/setup")
+def totp_setup(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.totp_service import generate_secret, provisioning_uri, qr_png_base64
+
+    secret = generate_secret()
+    current_user.totp_secret = secret
+    current_user.totp_enabled = False
+    db.commit()
+    uri = provisioning_uri(current_user, secret)
+    return {
+        "secret": secret,
+        "provisioning_uri": uri,
+        "qr_png_base64": qr_png_base64(uri),
+    }
+
+
+@router.post("/me/totp/enable")
+def totp_enable(
+    body: TotpVerifyBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.totp_service import verify_code
+
+    if not current_user.totp_secret:
+        raise HTTPException(400, "Run setup first.")
+    if not verify_code(current_user.totp_secret, body.code):
+        raise HTTPException(400, "Invalid code. Try again.")
+    current_user.totp_enabled = True
+    db.commit()
+    return {"enabled": True}
+
+
+@router.post("/me/totp/disable")
+def totp_disable(
+    body: TotpVerifyBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.totp_service import verify_code
+
+    if not current_user.totp_enabled or not current_user.totp_secret:
+        raise HTTPException(400, "Two-factor auth is not enabled.")
+    if not verify_code(current_user.totp_secret, body.code):
+        raise HTTPException(400, "Invalid code.")
+    current_user.totp_enabled = False
+    current_user.totp_secret = None
+    db.commit()
+    return {"enabled": False}
+
+
+@router.get("/me/export")
+def export_my_data(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from app.services.user_export_service import export_user_data
+
+    return export_user_data(db, current_user)
+
