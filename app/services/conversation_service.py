@@ -11,6 +11,7 @@ from app.models.conversation import Message, MessageKind, MessageThread, ThreadP
 from app.models.property import Property, Unit
 from app.models.user import User
 from app.services.media_storage_service import save_media
+from app.services.notification_service import create_notification
 from app.services.trust_service import compute_trust_score, peer_profile, user_badges
 
 
@@ -22,6 +23,54 @@ def _thread_type_value(t: MessageThread) -> str:
     if t.thread_type is None:
         return ThreadType.inquiry.value
     return t.thread_type.value if hasattr(t.thread_type, "value") else str(t.thread_type)
+
+
+def _messages_link_for_user(user: User, thread_id: int) -> str:
+    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    base = {
+        "tenant": "/tenant/messages",
+        "landlord": "/landlord/messages",
+        "staff": "/agent/messages",
+    }.get(role, "/landlord/messages")
+    return f"{base}?thread={thread_id}"
+
+
+def _notify_message_recipients(
+    db: Session,
+    thread: MessageThread,
+    sender_id: int,
+    body: str,
+    *,
+    attachment_name: Optional[str] = None,
+) -> None:
+    sender = db.query(User).filter(User.id == sender_id).first()
+    sender_name = (sender.full_name or sender.email or "Someone").strip() if sender else "Someone"
+
+    preview = (body or "").strip()
+    if attachment_name and not preview:
+        preview = f"Sent an attachment: {attachment_name}"
+    elif attachment_name:
+        preview = f"{preview} 📎"
+    if len(preview) > 120:
+        preview = preview[:117] + "…"
+
+    thread_label = thread.listing_title or thread.subject or "Rental Hub"
+    title = f"New message from {sender_name}"
+
+    for uid in _participant_ids(thread):
+        if uid == sender_id:
+            continue
+        recipient = db.query(User).filter(User.id == uid).first()
+        if not recipient:
+            continue
+        create_notification(
+            db,
+            user_id=uid,
+            title=title,
+            message=f"{thread_label}: {preview or 'New message'}",
+            notif_type="general",
+            link=_messages_link_for_user(recipient, thread.id),
+        )
 
 
 def find_thread_for_pair_and_unit(db: Session, a: int, b: int, unit_id: Optional[int]) -> Optional[MessageThread]:
@@ -109,6 +158,14 @@ def append_message(
     thread.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(m)
+    if message_kind == MessageKind.user and sender_id is not None:
+        _notify_message_recipients(
+            db,
+            thread,
+            sender_id,
+            body.strip(),
+            attachment_name=attachment_name,
+        )
     return m
 
 

@@ -35,6 +35,12 @@ def database_error_response(exc: SQLAlchemyError) -> tuple[str, int]:
         )
 
     if isinstance(exc, ProgrammingError):
+        if "column" in detail and "does not exist" in detail:
+            return (
+                "Database schema is out of date (missing column). Redeploy the API on Vercel or run "
+                "python -m app.utils.init_db against your Neon DATABASE_URL, then try login again.",
+                503,
+            )
         if "does not exist" in detail:
             return (
                 "Database tables are missing. From your machine, with the same Neon URL in .env, run: "
