@@ -108,23 +108,23 @@ async def lifespan(app: FastAPI):
             log.info("PRODUCTION: ready for global demo (live payments + DB).")
 
     reminder_task = None
+    if not is_serverless():
+        async def _rent_reminder_loop() -> None:
+            await asyncio.sleep(45)
+            while True:
+                try:
+                    from app.services.rent_reminder_service import run_rent_reminder_job
 
-    async def _rent_reminder_loop() -> None:
-        await asyncio.sleep(45)
-        while True:
-            try:
-                from app.services.rent_reminder_service import run_rent_reminder_job
+                    stats = await asyncio.to_thread(run_rent_reminder_job)
+                    if stats.get("tenant_notified") or stats.get("landlord_notified"):
+                        log.info("Rent reminder job: %s", stats)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("Rent reminder job failed: %s", exc)
+                await asyncio.sleep(86400)
 
-                stats = await asyncio.to_thread(run_rent_reminder_job)
-                if stats.get("tenant_notified") or stats.get("landlord_notified"):
-                    log.info("Rent reminder job: %s", stats)
-            except Exception as exc:  # noqa: BLE001
-                log.warning("Rent reminder job failed: %s", exc)
-            await asyncio.sleep(86400)
+        reminder_task = asyncio.create_task(_rent_reminder_loop())
 
-    reminder_task = asyncio.create_task(_rent_reminder_loop())
-
-    # Accept HTTP immediately; migrations run in background (avoids reload timeouts).
+    # Accept HTTP immediately; migrations run in background on local dev (avoids reload timeouts).
     yield
 
     if reminder_task is not None:
@@ -149,8 +149,7 @@ _app_kwargs: dict = {
     "docs_url": "/docs",
     "redoc_url": "/redoc",
 }
-if not is_serverless():
-    _app_kwargs["lifespan"] = lifespan
+_app_kwargs["lifespan"] = lifespan
 
 app = FastAPI(**_app_kwargs)
 
@@ -319,6 +318,24 @@ def health_db():
                     "hint": (
                         "Neon is reachable but app tables are missing. Run "
                         "python -m app.utils.init_db with the same DATABASE_URL, then retry login."
+                    ),
+                }
+            col = conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = :s AND table_name = 'users' AND column_name = 'totp_secret' LIMIT 1"
+                ),
+                {"s": table_schema},
+            ).first()
+            if not col:
+                return {
+                    "status": "error",
+                    "database": "connected",
+                    "schema": table_schema,
+                    "app_tables": "schema_outdated",
+                    "hint": (
+                        "users table exists but is missing newer columns. Redeploy the API "
+                        "(startup migrations) or run python -m app.utils.init_db."
                     ),
                 }
         return {
