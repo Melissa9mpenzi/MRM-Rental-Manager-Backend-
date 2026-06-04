@@ -115,7 +115,7 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
     if use_sui:
         if not blockchain_service.is_sui_configured():
             raise error_response(
-                "Sui wallet payments are not configured. Set SUI_TREASURY_ADDRESS in API .env.",
+                "Sui payments are unavailable. Set SECRET_KEY (or SUI_TREASURY_ADDRESS) on the API server.",
                 status_code=503,
             )
     else:
@@ -401,7 +401,9 @@ def execute_platform_sui_checkout(db: Session, user: User, reference: str) -> di
     amount_mist = int(
         init_raw.get("amount_mist") or sui_rpc.ugx_to_mist(Decimal(str(checkout.amount)))
     )
-    treasury = (init_raw.get("treasury_address") or settings.sui_treasury_address or "").strip()
+    from app.services.blockchain.wallet_provision import effective_sui_treasury_address
+
+    treasury = (init_raw.get("treasury_address") or effective_sui_treasury_address() or "").strip()
     if not treasury:
         raise error_response("Sui treasury not configured on API.", status_code=503)
 
@@ -462,7 +464,9 @@ def confirm_sui_checkout(
         init_raw = init_raw.get("raw") or {}
 
     amount_mist = int(init_raw.get("amount_mist") or sui_rpc.ugx_to_mist(Decimal(str(checkout.amount))))
-    treasury = (init_raw.get("treasury_address") or settings.sui_treasury_address or "").strip()
+    from app.services.blockchain.wallet_provision import effective_sui_treasury_address
+
+    treasury = (init_raw.get("treasury_address") or effective_sui_treasury_address() or "").strip()
 
     try:
         sui_rpc.verify_sui_transfer(

@@ -96,14 +96,32 @@ async def lifespan(app: FastAPI):
             gw.get("mode"),
         )
 
+    try:
+        from app.services.blockchain.wallet_provision import (
+            effective_sui_treasury_address,
+            request_testnet_gas,
+        )
+
+        treasury = effective_sui_treasury_address()
+        if treasury:
+            auto = not (settings.sui_treasury_address or "").strip()
+            log.info(
+                "SUI: treasury %s (%s)",
+                treasury[:16] + "…",
+                "auto-derived from SECRET_KEY" if auto else "SUI_TREASURY_ADDRESS",
+            )
+            await asyncio.to_thread(request_testnet_gas, treasury)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("SUI treasury setup skipped: %s", exc)
+
     if settings.is_production:
         from app.services.production_readiness import production_readiness
 
         ready = production_readiness()
         for msg in ready.get("issues") or []:
             log.error("PRODUCTION: %s", msg)
-        for msg in ready.get("warnings") or []:
-            log.warning("PRODUCTION: %s", msg)
+        if (settings.secret_key or "").strip() == "change-me-in-production-use-long-random-string":
+            log.error("PRODUCTION: SECRET_KEY must be a strong random value.")
         if ready.get("ready_for_global_demo"):
             log.info("PRODUCTION: ready for global demo (live payments + DB).")
 
