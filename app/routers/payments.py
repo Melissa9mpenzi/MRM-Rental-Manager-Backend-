@@ -119,7 +119,20 @@ def wallet_summary(
         "staff",
     ):
         require_landlord(current_user)
-    data = payment_service.wallet_summary_for_user(db, current_user)
+    try:
+        data = payment_service.wallet_summary_for_user(db, current_user)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "wallet_summary failed for user_id=%s role=%s",
+            current_user.id,
+            _role_str(current_user),
+        )
+        raise error_response(
+            "Could not load wallet summary. The server will retry after the next deploy.",
+            status_code=500,
+        ) from exc
     return success_response(data=data)
 
 

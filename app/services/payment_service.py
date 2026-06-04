@@ -1,8 +1,12 @@
+import enum
+import logging
 import os
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 from app.models.payment import Payment, PaymentMethod, PaymentType
 from app.models.invoice import Invoice, InvoiceStatus
@@ -59,23 +63,39 @@ def parse_payment_method(raw: str) -> PaymentMethod:
     return method
 
 
+def _safe_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _json_safe_value(value):
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, enum.Enum):
+        return value.value
+    return value
+
+
 def _enrich(p: Payment) -> dict:
     tenant = p.tenant
     unit   = tenant.unit if tenant else None
     prop   = unit.parent_property if unit else None
-    raw = {k: v for k, v in p.__dict__.items() if k != "_sa_instance_state"}
-    pt = raw.get("payment_type")
-    pm = raw.get("payment_method")
-    if hasattr(pt, "value"):
-        raw["payment_type"] = pt.value
-    if hasattr(pm, "value"):
-        raw["payment_method"] = pm.value
+    raw = {
+        k: _json_safe_value(v)
+        for k, v in p.__dict__.items()
+        if not k.startswith("_")
+    }
     raw["tenant_name"] = tenant.full_name if tenant else None
     raw["unit_number"] = unit.unit_number if unit else None
     raw["property_name"] = prop.name if prop else None
-    pd = raw.get("payment_date")
-    if pd is not None and hasattr(pd, "isoformat"):
-        raw["payment_date"] = pd.isoformat()
     return raw
 
 
@@ -286,8 +306,11 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
     manual_keys = {PaymentMethod.bank.value}
     for p in rows:
         pm = p.payment_method
-        key = pm.value if hasattr(pm, "value") else str(pm)
-        amt = float(p.amount)
+        try:
+            key = pm.value if hasattr(pm, "value") else str(pm or "other")
+        except Exception:  # noqa: BLE001
+            key = "other"
+        amt = _safe_float(p.amount)
         by_method[key] = by_method.get(key, 0.0) + amt
         if key in manual_keys:
             by_method_manual += amt
@@ -314,7 +337,11 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
 
     if scope == "landlord":
         arrears = get_arrears_list(db, user.id)
-        outstanding = sum(float(a.get("balance_due") or 0) for a in arrears if float(a.get("balance_due") or 0) > 0)
+        outstanding = sum(
+            _safe_float(a.get("balance_due"))
+            for a in arrears
+            if _safe_float(a.get("balance_due")) > 0
+        )
         properties = (
             db.query(Property)
             .options(joinedload(Property.units))
@@ -322,27 +349,40 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
             .all()
         )
         all_units = [u for p in properties for u in p.units]
+        occupied = UnitStatus.occupied.value
         expected_monthly = sum(
-            float(u.rent_amount) for u in all_units if u.status == UnitStatus.occupied
+            _safe_float(u.rent_amount)
+            for u in all_units
+            if (u.status.value if hasattr(u.status, "value") else str(u.status)) == occupied
         )
-        active_escrow = (
-            db.query(EscrowHold)
-            .filter(
-                EscrowHold.owner_id == user.id,
-                EscrowHold.status.in_(
-                    [EscrowStatus.pending, EscrowStatus.funded, EscrowStatus.held]
-                ),
-            )
-            .all()
-        )
-        escrow_held = sum(float(h.amount_ugx or 0) for h in active_escrow)
+        active_escrow = []
+        try:
+            from sqlalchemy import inspect as sa_inspect
+
+            from app.database import engine, postgres_table_schema
+
+            schema = postgres_table_schema if postgres_table_schema else None
+            if sa_inspect(engine).has_table("escrow_holds", schema=schema):
+                active_escrow = (
+                    db.query(EscrowHold)
+                    .filter(
+                        EscrowHold.owner_id == user.id,
+                        EscrowHold.status.in_(
+                            [EscrowStatus.pending, EscrowStatus.funded, EscrowStatus.held]
+                        ),
+                    )
+                    .all()
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wallet_summary escrow query skipped: %s", exc)
+        escrow_held = sum(_safe_float(h.amount_ugx) for h in active_escrow)
         payload.update(
             {
                 "available_ugx": round(total, 2),
                 "outstanding_rent_ugx": round(outstanding, 2),
                 "expected_monthly_rent_ugx": round(expected_monthly, 2),
                 "tenants_in_arrears": sum(
-                    1 for a in arrears if float(a.get("balance_due") or 0) > 0
+                    1 for a in arrears if _safe_float(a.get("balance_due")) > 0
                 ),
                 "escrow_held_ugx": round(escrow_held, 2),
                 "escrow_active_count": len(active_escrow),

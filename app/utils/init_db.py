@@ -328,6 +328,34 @@ def ensure_payments_column_migrations() -> None:
                     logger.warning("Could not alter payments.%s: %s", legacy_col, exc)
 
 
+def ensure_payment_method_enum_values() -> None:
+    """PostgreSQL: add pesapal/card to native paymentmethod enum if present."""
+    from app.config import settings
+
+    url = settings.database_url.lower()
+    if "postgresql" not in url:
+        return
+
+    enum_candidates = []
+    if postgres_table_schema:
+        enum_candidates.append(f'"{postgres_table_schema}".paymentmethod')
+    enum_candidates.extend(("paymentmethod", "public.paymentmethod"))
+
+    for enum_type in enum_candidates:
+        for val in ("pesapal", "card"):
+            try:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(f"ALTER TYPE {enum_type} ADD VALUE IF NOT EXISTS '{val}'")
+                    )
+                logger.info("Ensured %s enum value %s", enum_type, val)
+            except Exception as exc:  # noqa: BLE001
+                err = str(exc).lower()
+                if "does not exist" in err or "undefined_object" in err:
+                    break
+                logger.warning("Could not add %s.%s: %s", enum_type, val, exc)
+
+
 def ensure_government_schema_migrations() -> None:
     """Government portal columns + PostgreSQL enum values for gov_* roles."""
     from app.config import settings
@@ -677,6 +705,7 @@ def run_incremental_migrations() -> None:
     ensure_users_column_migrations()
     ensure_tenants_column_migrations()
     ensure_payments_column_migrations()
+    ensure_payment_method_enum_values()
     ensure_payment_checkout_table()
     ensure_blockchain_tables()
     ensure_receipt_tables()
