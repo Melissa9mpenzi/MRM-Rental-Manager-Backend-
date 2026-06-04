@@ -20,6 +20,8 @@ venv/
 uploads/
 test.db
 ci_test.db
+ci_wallet_test.db
+ci_wallet_test2.db
 
 # Local dev — skip repeated Neon migration checks on uvicorn reload
 .startup_migrations.stamp

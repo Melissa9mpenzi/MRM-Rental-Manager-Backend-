@@ -253,9 +253,34 @@ class TenantService:
             except ValueError:
                 pass
             del payload["status"]
+        new_email = payload.get("email")
+        if new_email is not None:
+            new_email = str(new_email).strip() or None
+            payload["email"] = new_email
+
         for k, v in payload.items():
             if hasattr(t, k):
                 setattr(t, k, v)
+
+        if new_email and t.user_id:
+            from app.models.user import User
+
+            user = db.query(User).filter(User.id == t.user_id).first()
+            if user and (user.email or "").strip().lower() != (new_email or "").strip().lower():
+                clash = (
+                    db.query(User)
+                    .filter(User.email == new_email, User.id != user.id)
+                    .first()
+                )
+                if clash:
+                    from fastapi import HTTPException
+
+                    raise HTTPException(
+                        status_code=409,
+                        detail="That email is already used by another login account.",
+                    )
+                user.email = new_email
+
         db.commit()
         db.refresh(t)
         return self.get_tenant(db, tenant_id, owner_id)

@@ -19,19 +19,23 @@ from app.models.payment_checkout import PaymentCheckout
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.blockchain import sui_rpc, walrus_anchor_service, walrus_service, wallet_provision
+from app.services.blockchain.wallet_provision import effective_sui_treasury_address
 from app.utils.response import error_response
 
 
 def is_sui_configured() -> bool:
-    return bool((settings.sui_treasury_address or "").strip())
+    return bool(effective_sui_treasury_address())
 
 
 def blockchain_public_status() -> dict[str, Any]:
+    treasury = effective_sui_treasury_address()
+    explicit_treasury = bool((settings.sui_treasury_address or "").strip())
     return {
-        "enabled": is_sui_configured(),
+        "enabled": bool(treasury),
         "network": (settings.sui_network or "devnet").lower(),
         "rpc_url": sui_rpc.rpc_url(),
-        "treasury_configured": bool((settings.sui_treasury_address or "").strip()),
+        "treasury_configured": bool(treasury),
+        "treasury_auto_derived": bool(treasury) and not explicit_treasury,
         "package_id": (settings.sui_package_id or "").strip() or None,
         "escrow_module": (settings.sui_escrow_module or "escrow").strip(),
         "walrus_configured": walrus_service.is_walrus_configured(),

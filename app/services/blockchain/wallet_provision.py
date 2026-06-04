@@ -22,6 +22,38 @@ def _wallet_seed(user_id: int) -> bytes:
     return hmac.new(secret, f"rentdirect-sui-wallet:v1:{user_id}".encode(), hashlib.sha256).digest()
 
 
+def _treasury_seed() -> bytes:
+    secret = (settings.secret_key or "change-me").encode()
+    return hmac.new(secret, b"rentdirect-sui-treasury:v1", hashlib.sha256).digest()
+
+
+def derive_platform_treasury_address() -> str:
+    """Stable platform treasury from SECRET_KEY (same deploy always gets the same address)."""
+    sk = Ed25519PrivateKey.from_private_bytes(_treasury_seed())
+    pk_bytes = sk.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    addr_bytes = hashlib.blake2b(SUI_ADDRESS_FLAG + pk_bytes, digest_size=32).digest()
+    return "0x" + addr_bytes.hex()
+
+
+def effective_sui_treasury_address() -> str:
+    """
+    Explicit ``SUI_TREASURY_ADDRESS`` wins; otherwise derive from SECRET_KEY so Sui pay works on Vercel
+    without a separate env var (fund the derived address on testnet via faucet).
+    """
+    explicit = (settings.sui_treasury_address or "").strip()
+    if explicit:
+        return explicit
+    secret = (settings.secret_key or "").strip()
+    if not secret:
+        return ""
+    if settings.is_production and secret == "change-me-in-production-use-long-random-string":
+        return ""
+    return derive_platform_treasury_address()
+
+
 def derive_keypair(user_id: int) -> tuple[Ed25519PrivateKey, str]:
     """Deterministic Ed25519 keypair → canonical Sui address (same user always gets same address)."""
     sk = Ed25519PrivateKey.from_private_bytes(_wallet_seed(user_id))
