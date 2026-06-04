@@ -223,6 +223,13 @@ def ensure_tenants_column_migrations() -> None:
 
     _tenant_column_ddls = [
         ("user_id", "INTEGER NULL", "INTEGER NULL", "INTEGER NULL"),
+        ("verification_token", "VARCHAR(100) NULL", "VARCHAR(100) NULL", "VARCHAR(100) NULL"),
+        (
+            "verification_token_expiry",
+            "TIMESTAMP WITHOUT TIME ZONE NULL",
+            "DATETIME NULL",
+            "TIMESTAMP NULL",
+        ),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _tenant_column_ddls:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)

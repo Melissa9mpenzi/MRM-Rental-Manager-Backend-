@@ -3,6 +3,7 @@ Tenant Portal API Routes
 Role-based access for tenants to view their own data only.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,48 @@ from app.utils.response import success_response, error_response
 router = APIRouter(prefix="/tenant", tags=["Tenant Portal"])
 
 
+def _norm_email(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def _find_unlinked_tenant_for_email(db: Session, email: str) -> Tenant | None:
+    norm = _norm_email(email)
+    if not norm:
+        return None
+    return (
+        db.query(Tenant)
+        .filter(Tenant.user_id.is_(None))
+        .filter(func.lower(Tenant.email) == norm)
+        .order_by(Tenant.id.desc())
+        .first()
+    )
+
+
+def _pending_invitation_payload(db: Session, tenant: Tenant) -> dict:
+    unit = tenant.unit
+    property_obj = unit.parent_property if unit else None
+    return {
+        "tenant_id": tenant.id,
+        "full_name": tenant.full_name,
+        "email": tenant.email,
+        "monthly_rent": float(tenant.monthly_rent) if tenant.monthly_rent is not None else None,
+        "lease_start": str(tenant.lease_start) if tenant.lease_start else None,
+        "unit": {
+            "id": unit.id,
+            "unit_number": unit.unit_number,
+        }
+        if unit
+        else None,
+        "property": {
+            "id": property_obj.id,
+            "name": property_obj.name,
+            "address": property_obj.address,
+        }
+        if property_obj
+        else None,
+    }
+
+
 def _tenant_self_dict(tenant: Tenant) -> dict:
     status = tenant.status.value if hasattr(tenant.status, "value") else str(tenant.status)
     return {
@@ -39,15 +82,114 @@ def _tenant_self_dict(tenant: Tenant) -> dict:
     }
 
 
+@router.post("/reconnect")
+def reconnect_tenant_profile(
+    current_user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Link the landlord's tenant record to the currently logged-in account (same email).
+    Use when you already accepted an invite but sign in with Google/Privy or a different method.
+    """
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    before = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    tenant = resolve_tenant_for_user(db, current_user)
+    if not tenant:
+        raise error_response(
+            f"No rental record found for {current_user.email}. "
+            "Ask your landlord to add you as a tenant with this exact email, then resend the invite.",
+            status_code=404,
+        )
+    return success_response(
+        data={
+            **_tenant_self_dict(tenant),
+            "was_already_linked": before is not None and before.id == tenant.id,
+            "relinked": before is None,
+        },
+        message="Rental record linked to this login."
+        if before is None
+        else "Your rental record is already linked to this login.",
+    )
+
+
+@router.get("/pending-invitation")
+def get_pending_invitation(
+    current_user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """
+    Rental waiting to be linked to this login (same email, no portal account yet).
+    Shown on the tenant dashboard so acceptance does not require the email link.
+    """
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    if resolve_tenant_for_user(db, current_user):
+        return success_response(data=None, message="Already linked to a rental record.")
+
+    pending = _find_unlinked_tenant_for_email(db, current_user.email)
+    if not pending:
+        return success_response(data=None, message="No pending invitation for this email.")
+
+    return success_response(
+        data=_pending_invitation_payload(db, pending),
+        message="You have a rental invitation waiting.",
+    )
+
+
+@router.post("/accept-rental")
+def accept_rental_in_app(
+    current_user: User = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    """Link the landlord's tenant record to the logged-in account (no email token required)."""
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    existing = resolve_tenant_for_user(db, current_user)
+    if existing:
+        return success_response(
+            data={**_tenant_self_dict(existing), "already_linked": True},
+            message="Your rental record is already linked to this login.",
+        )
+
+    pending = _find_unlinked_tenant_for_email(db, current_user.email)
+    if not pending:
+        raise error_response(
+            f"No rental invitation found for {current_user.email}. "
+            "Ask your landlord to add you with this exact email, then try again.",
+            status_code=404,
+        )
+
+    pending.user_id = current_user.id
+    pending.verification_token = None
+    pending.verification_token_expiry = None
+    if not pending.phone and getattr(current_user, "phone", None):
+        pending.phone = current_user.phone
+    if pending.full_name and not current_user.full_name:
+        current_user.full_name = pending.full_name
+    db.commit()
+    db.refresh(pending)
+
+    return success_response(
+        data={**_tenant_self_dict(pending), "already_linked": False},
+        message="Rental linked. You can pay rent and view your lease from the dashboard.",
+    )
+
+
 @router.get("/me")
 def get_my_tenant_profile(
     current_user: User = Depends(require_tenant),
     db: Session = Depends(get_db)
 ):
     """Get the tenant's own profile with standardized response"""
-    tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    tenant = resolve_tenant_for_user(db, current_user)
     if not tenant:
-        raise error_response("Tenant profile not found. Contact your landlord.", status_code=404)
+        raise error_response(
+            "No rental record linked to this login. Accept your landlord invite first.",
+            status_code=404,
+        )
     return success_response(data=_tenant_self_dict(tenant))
 
 
@@ -58,9 +200,14 @@ def update_my_tenant_profile(
     db: Session = Depends(get_db),
 ):
     """Update contact details on the tenant's rental record (syncs phone to user account)."""
-    tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    tenant = resolve_tenant_for_user(db, current_user)
     if not tenant:
-        raise error_response("Tenant profile not found. Contact your landlord.", status_code=404)
+        raise error_response(
+            "No rental record linked to this login. Accept your landlord invite first.",
+            status_code=404,
+        )
 
     data = payload.model_dump(exclude_none=True)
     for key, value in data.items():
@@ -85,7 +232,9 @@ def get_my_payments(
     db: Session = Depends(get_db)
 ):
     """Get payment history for the logged-in tenant with standardized response"""
-    tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    tenant = resolve_tenant_for_user(db, current_user)
     if not tenant:
         return success_response(data=[], message="No rental record yet — payments appear after your landlord assigns a unit.")
     
@@ -110,38 +259,40 @@ def get_my_payments(
 @router.get("/my-invoices")
 def get_my_invoices(
     current_user: User = Depends(require_tenant),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    ensure_current: bool = True,
 ):
     """Get invoices for the logged-in tenant with standardized response"""
-    from app.models.invoice import Invoice, InvoiceStatus
-    tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    from app.models.invoice import Invoice
+    from app.services.invoice_service import (
+        ensure_current_rent_invoice,
+        resolve_tenant_for_user,
+        serialize_invoice,
+    )
+
+    tenant = resolve_tenant_for_user(db, current_user)
     if not tenant:
-        raise error_response("Tenant profile not found.", status_code=404)
-    
-    invoices = db.query(Invoice).filter(
-        Invoice.tenant_id == tenant.id,
-        Invoice.is_deleted == False
-    ).order_by(Invoice.created_at.desc()).all()
-    
-    data = [
-        {
-            "id": inv.id,
-            "invoice_number": inv.invoice_number,
-            "period_month": inv.period_month,
-            "period_year": inv.period_year,
-            "due_date": str(inv.due_date),
-            "rent_amount": float(inv.rent_amount),
-            "penalty_amount": float(inv.penalty_amount),
-            "discount_amount": float(inv.discount_amount),
-            "total_amount": float(inv.total_amount),
-            "amount_paid": float(inv.amount_paid),
-            "balance_due": float(inv.balance_due),
-            "status": inv.status.value,
-            "description": inv.description,
-        }
-        for inv in invoices
-    ]
-    return success_response(data=data)
+        raise error_response(
+            "No rental record linked to this login. Accept your landlord invite first.",
+            status_code=404,
+        )
+
+    if ensure_current:
+        try:
+            ensure_current_rent_invoice(db, tenant)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).warning("ensure_current_rent_invoice: %s", exc)
+
+    invoices = (
+        db.query(Invoice)
+        .filter(Invoice.tenant_id == tenant.id, Invoice.is_deleted == False)
+        .order_by(Invoice.created_at.desc())
+        .all()
+    )
+
+    return success_response(data=[serialize_invoice(inv) for inv in invoices])
 
 
 @router.get("/my-lease")
@@ -150,10 +301,15 @@ def get_my_lease(
     db: Session = Depends(get_db)
 ):
     """Get lease details for the tenant with standardized response"""
-    tenant = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    from app.services.invoice_service import resolve_tenant_for_user
+
+    tenant = resolve_tenant_for_user(db, current_user)
     if not tenant:
-        raise error_response("Tenant profile not found.", status_code=404)
-    
+        raise error_response(
+            "No rental record linked to this login. Accept your landlord invite first.",
+            status_code=404,
+        )
+
     from app.models.lease import Lease, LeaseStatus
     lease = db.query(Lease).filter(
         Lease.tenant_id == tenant.id,
@@ -236,6 +392,8 @@ def send_tenant_invite(
     
     if tenant.user_id:
         raise error_response("Tenant already has a login account.", status_code=400)
+
+    tenant.email = str(invite.email).strip()
     
     # Generate invite token
     import secrets
@@ -247,7 +405,7 @@ def send_tenant_invite(
     tenant.verification_token_expiry = expiry
     db.commit()
     
-    # Send invite email
+    # Send invite email (optional — tenant can accept on dashboard when logged in)
     invite_link = f"{frontend_base_url()}/tenant/accept-invite?token={token}&email={invite.email}"
     subject = "You're invited to access your rental account"
     html = f"""
@@ -265,14 +423,19 @@ def send_tenant_invite(
     """
     
     sent = send_email(invite.email, subject, html)
-    if not sent:
-        raise error_response("Failed to send invite email.", status_code=500)
-    
-    # Update tenant email if different
-    tenant.email = invite.email
-    db.commit()
-    
-    return success_response(data={"email": invite.email}, message="Invite sent successfully")
+
+    return success_response(
+        data={
+            "email": invite.email,
+            "email_sent": bool(sent),
+            "dashboard_accept": True,
+        },
+        message=(
+            "Invite sent by email."
+            if sent
+            else "Invite is ready — tenant can sign in with this email and accept it on their dashboard."
+        ),
+    )
 
 
 @router.post("/invite/accept", status_code=201)
@@ -300,10 +463,57 @@ def accept_tenant_invite(
         if datetime.now(timezone.utc) > expiry:
             raise error_response("Invite token has expired. Contact your landlord.", status_code=400)
     
+    email = (tenant.email or "").strip().lower()
+    if not email:
+        raise error_response(
+            "This invite has no email on file. Ask your landlord to resend the invite to your email address.",
+            status_code=400,
+        )
+
     if tenant.user_id:
-        raise error_response("Tenant account already activated.", status_code=400)
-    
-    # Create user account for tenant
+        linked = db.query(User).filter(User.id == tenant.user_id).first()
+        tokens = auth_service.create_tokens(db, linked) if linked else None
+        return success_response(
+            data={
+                "email": linked.email if linked else email,
+                "already_active": True,
+                "access_token": tokens["access_token"] if tokens else None,
+                "refresh_token": tokens["refresh_token"] if tokens else None,
+            },
+            message="This invite was already accepted. Sign in with the same email you used before.",
+        )
+
+    from sqlalchemy import func
+
+    existing = db.query(User).filter(func.lower(User.email) == email).first()
+    if existing:
+        role_val = existing.role.value if hasattr(existing.role, "value") else str(existing.role)
+        if role_val != UserRole.tenant.value:
+            raise error_response(
+                "This email is registered as a non-tenant account. Use a different email or contact support.",
+                status_code=400,
+            )
+        existing.password_hash = auth_service.hash_password(accept.password)
+        existing.email_verified = True
+        existing.full_name = tenant.full_name or existing.full_name
+        if tenant.phone:
+            existing.phone = tenant.phone
+        tenant.user_id = existing.id
+        tenant.verification_token = None
+        tenant.verification_token_expiry = None
+        db.commit()
+        db.refresh(existing)
+        tokens = auth_service.create_tokens(db, existing)
+        return success_response(
+            data={
+                "email": existing.email,
+                "access_token": tokens["access_token"],
+                "refresh_token": tokens["refresh_token"],
+                "linked_existing_account": True,
+            },
+            message="Rental record linked to your existing account. You are signed in.",
+        )
+
     user = User(
         email=tenant.email,
         full_name=tenant.full_name,
@@ -317,14 +527,21 @@ def accept_tenant_invite(
     db.add(user)
     db.commit()
     db.refresh(user)
-    
-    # Link tenant to user
+
     tenant.user_id = user.id
     tenant.verification_token = None
     tenant.verification_token_expiry = None
     db.commit()
-    
-    return success_response(data={"email": user.email}, message="Account created successfully. You can now log in.")
+
+    tokens = auth_service.create_tokens(db, user)
+    return success_response(
+        data={
+            "email": user.email,
+            "access_token": tokens["access_token"],
+            "refresh_token": tokens["refresh_token"],
+        },
+        message="Account created. You are signed in.",
+    )
 
 
 @router.get("/invite/verify")
