@@ -18,7 +18,7 @@ class InvoiceCreate(BaseModel):
 
 class InvoicePayment(BaseModel):
     amount: Decimal = Field(..., gt=0)
-    payment_method: str = "cash"
+    payment_method: str = "mtn_momo"
     payment_date: date
     reference: Optional[str] = None
     notes: Optional[str] = None

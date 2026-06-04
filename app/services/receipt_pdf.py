@@ -1,4 +1,4 @@
-"""Enterprise PDF receipts with QR verification codes."""
+"""Professional PDF receipts with QR verification (no sensitive internals on document)."""
 from __future__ import annotations
 
 import io
@@ -12,18 +12,19 @@ from reportlab.lib.units import cm
 from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from app.config import settings
+from app.services.receipt_redaction import receipt_pdf_fields
 
 
 def _status_color(status: str) -> colors.Color:
     key = (status or "paid").lower()
     palette = {
-        "paid": colors.HexColor("#22c55e"),
-        "pending": colors.HexColor("#f59e0b"),
-        "failed": colors.HexColor("#ef4444"),
-        "escrowed": colors.HexColor("#8b5cf6"),
-        "refunded": colors.HexColor("#64748b"),
+        "paid": colors.HexColor("#15803d"),
+        "pending": colors.HexColor("#b45309"),
+        "failed": colors.HexColor("#b91c1c"),
+        "escrowed": colors.HexColor("#6d28d9"),
+        "refunded": colors.HexColor("#475569"),
     }
-    return palette.get(key, colors.HexColor("#22c55e"))
+    return palette.get(key, colors.HexColor("#15803d"))
 
 
 def _qr_image(verify_url: str):
@@ -32,11 +33,11 @@ def _qr_image(verify_url: str):
     qr = qrcode.QRCode(version=1, box_size=4, border=2)
     qr.add_data(verify_url)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="#0a1210", back_color="white")
+    img = qr.make_image(fill_color="#0c1219", back_color="white")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return Image(buf, width=3.2 * cm, height=3.2 * cm)
+    return Image(buf, width=2.8 * cm, height=2.8 * cm)
 
 
 def build_receipt_pdf_bytes(
@@ -45,9 +46,10 @@ def build_receipt_pdf_bytes(
     verify_url: str,
 ) -> bytes:
     """Generate enterprise PDF in memory (works on Vercel serverless)."""
+    safe = receipt_pdf_fields(receipt)
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
-    _build_receipt_pdf_story(doc, receipt, verify_url=verify_url)
+    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.8 * cm, bottomMargin=1.8 * cm)
+    _build_receipt_pdf_story(doc, safe, verify_url=verify_url)
     return buffer.getvalue()
 
 
@@ -77,135 +79,156 @@ def _build_receipt_pdf_story(
     verify_url: str,
 ) -> None:
     styles = getSampleStyleSheet()
-    navy = colors.HexColor("#0c1219")
-    teal = colors.HexColor("#00a376")
+    navy = colors.HexColor("#0f172a")
+    teal = colors.HexColor("#0d9488")
     muted = colors.HexColor("#64748b")
+    line = colors.HexColor("#e2e8f0")
 
-    title = ParagraphStyle("title", parent=styles["Heading1"], textColor=navy, fontSize=18, spaceAfter=2)
-    badge = ParagraphStyle("badge", parent=styles["Normal"], fontSize=9, textColor=colors.white, alignment=1)
-    label = ParagraphStyle("label", parent=styles["Normal"], fontSize=8, textColor=muted)
-    value = ParagraphStyle("value", parent=styles["Normal"], fontSize=9, textColor=navy, fontName="Helvetica-Bold")
+    title = ParagraphStyle(
+        "title",
+        parent=styles["Heading1"],
+        textColor=navy,
+        fontSize=16,
+        fontName="Helvetica-Bold",
+        spaceAfter=2,
+    )
+    subtitle = ParagraphStyle("subtitle", parent=styles["Normal"], fontSize=9, textColor=muted, spaceAfter=0)
+    section = ParagraphStyle("section", parent=styles["Normal"], fontSize=9, textColor=teal, fontName="Helvetica-Bold")
     body = ParagraphStyle("body", parent=styles["Normal"], fontSize=9, textColor=navy)
+    fine = ParagraphStyle("fine", parent=styles["Normal"], fontSize=7, textColor=muted, leading=10)
 
     status = str(receipt.get("status") or "paid").upper()
-    rtype = str(receipt.get("receipt_type") or "rent_payment").replace("_", " ").title()
+    status_color = _status_color(status)
 
     story = [
-        Paragraph("RentDirect <font color='#00a376'>UG</font>", title),
-        Paragraph("Blockchain Payment Receipt", ParagraphStyle("sub", parent=body, fontSize=11, textColor=muted)),
-        Spacer(1, 0.3 * cm),
+        Paragraph("RentDirect <font color='#0d9488'>UG</font>", title),
+        Paragraph("Official Payment Receipt", subtitle),
+        Spacer(1, 0.35 * cm),
     ]
 
-    header_data = [
+    meta = Table(
         [
-            Paragraph(f"<b>Receipt #</b><br/>{receipt.get('receipt_number', '—')}", body),
-            Paragraph(f"<b>Date</b><br/>{receipt.get('issued_at_label', '—')}", body),
-            Paragraph(
-                f'<para backColor="{_status_color(status).hexval()}" align="center">'
-                f"<font color='white'><b>{status}</b></font></para>",
-                badge,
-            ),
-        ]
-    ]
-    ht = Table(header_data, colWidths=[6 * cm, 5 * cm, 4 * cm])
-    ht.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 0)]))
-    story.extend([ht, Spacer(1, 0.5 * cm)])
+            [
+                Paragraph(f"<b>Receipt No.</b><br/>{receipt.get('receipt_number', '—')}", body),
+                Paragraph(f"<b>Date issued</b><br/>{receipt.get('issued_at_label', '—')}", body),
+                Paragraph(
+                    f'<para backColor="{status_color.hexval()}" align="center" '
+                    f'leftIndent="4" rightIndent="4" spaceBefore="2" spaceAfter="2">'
+                    f"<font color='white' size='8'><b>{status}</b></font></para>",
+                    ParagraphStyle("badge", parent=body, alignment=1),
+                ),
+            ]
+        ],
+        colWidths=[5.5 * cm, 5.5 * cm, 4 * cm],
+    )
+    meta.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LINEBELOW", (0, 0), (-1, 0), 0.5, line),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    story.extend([meta, Spacer(1, 0.45 * cm)])
 
-    story.append(Paragraph("Property", ParagraphStyle("sec", parent=value, fontSize=10, textColor=teal)))
-    prop_rows = [
-        ["Property", receipt.get("property_name") or "—"],
-        ["Address", receipt.get("property_address") or "—"],
-        ["Unit", receipt.get("unit_number") or "—"],
-        ["Landlord", receipt.get("landlord_name") or "—"],
-        ["Lease", f"{receipt.get('lease_start') or '—'} → {receipt.get('lease_end') or '—'}"],
-    ]
-    story.extend([_kv_table(prop_rows), Spacer(1, 0.4 * cm)])
-
-    story.append(Paragraph("Payment", ParagraphStyle("sec2", parent=value, fontSize=10, textColor=teal)))
-    pay_rows = [
-        ["Tenant", receipt.get("tenant_name") or "—"],
-        ["Period", receipt.get("period_label") or "—"],
-        ["Method", (receipt.get("payment_method") or "—").replace("_", " ").title()],
-        ["Reference", receipt.get("transaction_reference") or "—"],
-        ["Currency", receipt.get("currency") or "UGX"],
-    ]
-    story.extend([_kv_table(pay_rows), Spacer(1, 0.3 * cm)])
-
-    amt = receipt.get("amount_display") or f"{receipt.get('currency', 'UGX')} {float(receipt.get('amount', 0)):,.0f}"
-    amt_table = Table([["AMOUNT PAID", amt]], colWidths=[5 * cm, 10 * cm])
+    amt = receipt.get("amount_display") or (
+        f"{receipt.get('currency', 'UGX')} {float(receipt.get('amount', 0)):,.0f}"
+    )
+    amt_table = Table([["Amount received", amt]], colWidths=[5 * cm, 10 * cm])
     amt_table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, -1), teal),
                 ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
                 ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (0, 0), 9),
-                ("FONTSIZE", (1, 0), (1, 0), 14),
-                ("TOPPADDING", (0, 0), (-1, -1), 10),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("FONTSIZE", (0, 0), (0, 0), 8),
+                ("FONTSIZE", (1, 0), (1, 0), 13),
+                ("TOPPADDING", (0, 0), (-1, -1), 12),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+                ("LEFTPADDING", (0, 0), (-1, -1), 14),
             ]
         )
     )
-    story.extend([amt_table, Spacer(1, 0.4 * cm)])
+    story.extend([amt_table, Spacer(1, 0.45 * cm)])
 
-    if receipt.get("tx_hash") or receipt.get("wallet_address"):
-        story.append(Paragraph("Blockchain proof", ParagraphStyle("sec3", parent=value, fontSize=10, textColor=teal)))
+    story.append(Paragraph("Tenancy", section))
+    tenancy_rows = [
+        ["Property", receipt.get("property_name") or "—"],
+        ["Location", receipt.get("property_address") or "—"],
+        ["Unit", receipt.get("unit_number") or "—"],
+        ["Billing period", receipt.get("period_label") or "—"],
+        ["Paid by", receipt.get("tenant_name") or "—"],
+    ]
+    story.extend([_kv_table(tenancy_rows), Spacer(1, 0.35 * cm)])
+
+    story.append(Paragraph("Payment", section))
+    pay_rows = [
+        ["Method", (receipt.get("payment_method") or "—").replace("_", " ").title()],
+        ["Reference", receipt.get("transaction_reference") or "—"],
+        ["Currency", receipt.get("currency") or "UGX"],
+    ]
+    if receipt.get("landlord_name"):
+        pay_rows.insert(0, ["Received by", receipt.get("landlord_name")])
+    story.extend([_kv_table(pay_rows), Spacer(1, 0.35 * cm)])
+
+    if receipt.get("tx_hash"):
+        story.append(Paragraph("Digital verification", section))
         chain_rows = [
-            ["Network", receipt.get("network") or settings.sui_network or "Sui"],
-            ["Wallet", receipt.get("wallet_address") or "—"],
-            ["TX Hash", receipt.get("tx_hash") or "—"],
-            ["Contract", receipt.get("contract_id") or "—"],
-            ["Walrus proof", receipt.get("walrus_blob_id") or "—"],
+            ["Status", "Payment recorded on RentDirect UG"],
+            ["Network", (receipt.get("network") or settings.sui_network or "Sui").title()],
+            ["Transaction", receipt.get("tx_hash") or "—"],
         ]
         story.extend([_kv_table(chain_rows), Spacer(1, 0.3 * cm)])
 
     if receipt.get("tax_id") or receipt.get("vat_amount"):
-        story.append(Paragraph("Government tax (URA)", ParagraphStyle("sec4", parent=value, fontSize=10, textColor=teal)))
+        story.append(Paragraph("Tax information", section))
         tax_rows = [
-            ["Tax ID", receipt.get("tax_id") or "—"],
+            ["Tax reference", receipt.get("tax_id") or "—"],
             ["URA code", receipt.get("ura_compliance_code") or "—"],
             ["VAT", receipt.get("vat_display") or "—"],
-            ["Tax rate", f"{receipt.get('tax_percentage') or 0}%"],
         ]
         story.extend([_kv_table(tax_rows), Spacer(1, 0.3 * cm)])
-
-    if receipt.get("smart_summary"):
-        story.extend(
-            [
-                Paragraph("Summary", ParagraphStyle("sum", parent=label, fontSize=8, textColor=muted)),
-                Paragraph(receipt["smart_summary"], body),
-                Spacer(1, 0.3 * cm),
-            ]
-        )
 
     qr_row = Table(
         [
             [
                 _qr_image(verify_url),
                 Paragraph(
-                    f"<b>Scan to Verify Receipt</b><br/>Tamper-proof trust link:<br/>"
-                    f"<font size='7'>{verify_url}</font><br/><br/>"
-                    f"Checksum: <font size='7'>{receipt.get('checksum', '')[:16]}…</font><br/>"
-                    f"Signature: <font size='7'>{receipt.get('digital_signature', '')[:20]}…</font>",
+                    "<b>Verify this receipt</b><br/>"
+                    "Scan the QR code to confirm authenticity on RentDirect UG.<br/><br/>"
+                    "<font size='7' color='#64748b'>"
+                    "This document is system-generated. Do not alter amounts or references. "
+                    "For disputes, contact the issuer with your receipt number."
+                    "</font>",
                     body,
                 ),
             ]
         ],
-        colWidths=[4 * cm, 11 * cm],
+        colWidths=[3.5 * cm, 11.5 * cm],
     )
-    qr_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")]))
+    qr_row.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 0.5, line),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f8fafc")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ]
+        )
+    )
     story.extend([qr_row, Spacer(1, 0.5 * cm)])
 
     support = settings.email_support_email or "support@rentdirect.ug"
     story.append(
         Paragraph(
-            f"<font size='7' color='#64748b'>"
-            f"RentDirect UG — National rental payment infrastructure · Uganda<br/>"
-            f"Support: {support} · Terms apply · Digitally signed system receipt<br/>"
-            f"Government compliance seal · Verify at verify.rentdirect.ug"
-            f"</font>",
-            body,
+            f"RentDirect UG · Rental payment records · Uganda<br/>"
+            f"Customer support: {support}<br/>"
+            f"Receipt {receipt.get('receipt_number', '')} · Issued {receipt.get('issued_at_label', '')}",
+            fine,
         )
     )
 
@@ -213,9 +236,9 @@ def _build_receipt_pdf_story(
 
 
 def _kv_table(rows: list[list[str]]) -> Table:
-    dark = colors.HexColor("#0c1219")
+    dark = colors.HexColor("#0f172a")
     muted = colors.HexColor("#64748b")
-    t = Table(rows, colWidths=[4 * cm, 11 * cm])
+    t = Table(rows, colWidths=[4.2 * cm, 10.8 * cm])
     t.setStyle(
         TableStyle(
             [
@@ -225,8 +248,9 @@ def _kv_table(rows: list[list[str]]) -> Table:
                 ("FONTNAME", (0, 0), (0, -1), "Helvetica"),
                 ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
                 ("ROWBACKGROUNDS", (0, 0), (-1, -1), [colors.HexColor("#f8fafc"), colors.white]),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LINEBELOW", (0, 0), (-1, -2), 0.25, colors.HexColor("#e2e8f0")),
             ]
         )
     )

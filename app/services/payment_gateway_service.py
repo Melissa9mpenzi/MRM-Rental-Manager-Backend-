@@ -98,8 +98,13 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
         raise error_response(f"Amount must be between 0 and {balance}.", status_code=400)
 
     method = (body.payment_method or "mtn_momo").strip().lower()
-    if method in ("card", "visa"):
-        method = "other"
+    if method in ("card", "visa", "mastercard"):
+        method = "pesapal"
+    if method == "cash":
+        raise error_response(
+            "Cash is not supported. Use MTN MoMo, Airtel, Pesapal, bank transfer, or Sui.",
+            status_code=400,
+        )
     phone = _normalize_phone(body.phone or tenant.phone)
 
     if method in MOMO_METHODS and not phone:

@@ -14,6 +14,50 @@ from app.schemas.payment import PaymentCreate, PaymentUpdate
 
 MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
+_ONLINE_METHODS = {
+    PaymentMethod.mtn_momo.value,
+    PaymentMethod.airtel.value,
+    PaymentMethod.sui.value,
+    PaymentMethod.pesapal.value,
+    PaymentMethod.card.value,
+    PaymentMethod.other.value,
+}
+
+
+def parse_payment_method(raw: str) -> PaymentMethod:
+    """Normalize and validate payment method (cash not allowed)."""
+    key = (raw or PaymentMethod.mtn_momo.value).strip().lower()
+    if key == "cash":
+        raise HTTPException(
+            400,
+            "Cash is not supported. Use MTN MoMo, Airtel, bank transfer, Pesapal, or Sui.",
+        )
+    aliases = {
+        "mtn": PaymentMethod.mtn_momo,
+        "momo": PaymentMethod.mtn_momo,
+        "mobile_money": PaymentMethod.mtn_momo,
+        "momo_mtn": PaymentMethod.mtn_momo,
+        "momo_airtel": PaymentMethod.airtel,
+        "bank_transfer": PaymentMethod.bank,
+        "visa": PaymentMethod.card,
+        "mastercard": PaymentMethod.card,
+    }
+    if key in aliases:
+        return aliases[key]
+    try:
+        method = PaymentMethod(key)
+    except ValueError:
+        raise HTTPException(
+            400,
+            f"Unsupported payment method: {raw}. Use mtn_momo, airtel, bank, pesapal, card, or sui.",
+        )
+    if method == PaymentMethod.cash:
+        raise HTTPException(
+            400,
+            "Cash is not supported. Use MTN MoMo, Airtel, bank transfer, Pesapal, or Sui.",
+        )
+    return method
+
 
 def _enrich(p: Payment) -> dict:
     tenant = p.tenant
@@ -90,10 +134,7 @@ def settle_invoice_payment(
     if amount > invoice.balance_due:
         raise HTTPException(400, f"Payment amount exceeds balance due ({invoice.balance_due})")
 
-    try:
-        method_enum = PaymentMethod(payment_method)
-    except ValueError:
-        method_enum = PaymentMethod.other
+    method_enum = parse_payment_method(payment_method)
 
     payment = Payment(
         tenant_id=invoice.tenant_id,
@@ -149,10 +190,12 @@ def record_payment(db: Session, data: PaymentCreate, owner_id: int) -> dict:
     if not tenant:
         raise HTTPException(404, "Tenant not found")
 
+    payload = data.model_dump()
+    payload["payment_method"] = parse_payment_method(payload.get("payment_method") or "mtn_momo")
     payment = Payment(
         owner_id=owner_id,
         unit_id=tenant.unit_id,
-        **data.model_dump(),
+        **payload,
     )
     db.add(payment)
     db.commit()
@@ -240,7 +283,7 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
     by_method: dict[str, float] = {}
     by_method_online = 0.0
     by_method_manual = 0.0
-    manual_keys = {PaymentMethod.cash.value, PaymentMethod.bank.value, "other"}
+    manual_keys = {PaymentMethod.bank.value}
     for p in rows:
         pm = p.payment_method
         key = pm.value if hasattr(pm, "value") else str(pm)
