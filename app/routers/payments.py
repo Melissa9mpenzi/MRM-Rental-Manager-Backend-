@@ -6,8 +6,8 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_landlord, require_tenant, _role_str
-from app.models.user import User
+from app.dependencies import get_current_user, require_landlord, require_roles, require_tenant, _role_str
+from app.models.user import User, UserRole
 from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentUpdate, PaymentOut
 from app.schemas.payment_gateway import InitiateCheckoutBody
@@ -36,6 +36,62 @@ def list_payments(
 def payment_gateway_status():
     """Whether live Flutterwave (or dev-only mock) is active — clients use this before Pay now."""
     return success_response(data=gateway_public_status())
+
+
+@router.get("/payments/platform-fees")
+def platform_fee_table():
+    """Public fee schedule for landlords and marketing."""
+    from app.services import platform_fee_service
+
+    return success_response(data=platform_fee_service.fee_config_public())
+
+
+@router.get("/payments/landlord-balance")
+def landlord_balance(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_landlord),
+):
+    """Landlord withdrawable balance after platform fees (ledger)."""
+    from app.services import platform_fee_service
+
+    return success_response(data=platform_fee_service.landlord_balance_summary(db, current_user.id))
+
+
+@router.get("/payments/landlord-ledger")
+def landlord_ledger(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_landlord),
+):
+    from app.services import platform_fee_service
+
+    rows = platform_fee_service.list_ledger(db, current_user.id, limit=limit, offset=offset)
+    return success_response(data=rows)
+
+
+@router.post("/payments/accrue-unit-fees")
+def accrue_unit_fees(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_landlord),
+):
+    """Bill monthly per-unit platform fee for occupied units (idempotent per month)."""
+    from app.services import platform_fee_service
+
+    result = platform_fee_service.accrue_monthly_unit_fees(db, owner_id=current_user.id)
+    db.commit()
+    return success_response(data=result, message="Unit subscription fees processed.")
+
+
+@router.get("/payments/platform-revenue")
+def platform_revenue(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles([UserRole.system_admin])),
+):
+    """System admin — total platform fees collected."""
+    from app.services import platform_fee_service
+
+    return success_response(data=platform_fee_service.platform_revenue_summary(db))
 
 
 @router.post("/payments/checkout/initiate")

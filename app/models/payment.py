@@ -32,6 +32,9 @@ class Payment(Base):
     unit_id         = Column(Integer, ForeignKey("units.id", ondelete="SET NULL"), nullable=True, index=True)
     owner_id        = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     amount          = Column(Numeric(12, 2), nullable=False)
+    gross_amount    = Column(Numeric(12, 2), nullable=True)
+    platform_fee    = Column(Numeric(12, 2), nullable=True)
+    net_to_landlord = Column(Numeric(12, 2), nullable=True)
     payment_type    = Column(Enum(PaymentType), default=PaymentType.rent)
     payment_method  = Column(Enum(PaymentMethod), default=PaymentMethod.mtn_momo)
     reference       = Column(String(100), nullable=True)   # MoMo transaction ID
