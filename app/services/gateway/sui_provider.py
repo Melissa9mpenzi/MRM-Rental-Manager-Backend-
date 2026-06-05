@@ -9,17 +9,17 @@ from typing import Any, Optional
 from app.config import settings
 from app.services.gateway.base import PaymentGatewayProvider, ProviderInitResult
 from app.services.blockchain.sui_rpc import ugx_to_mist
+from app.services.blockchain.wallet_provision import effective_sui_treasury_address
 
 
 class SuiGatewayProvider(PaymentGatewayProvider):
     name = "sui"
 
     def _treasury(self) -> str:
-        addr = (settings.sui_treasury_address or "").strip()
+        addr = effective_sui_treasury_address()
         if not addr:
             raise ValueError(
-                "SUI_TREASURY_ADDRESS is required for wallet payments. "
-                "Fund a devnet address and set it in .env."
+                "Sui treasury not available. Set SUI_TREASURY_ADDRESS or a production SECRET_KEY on the API."
             )
         return addr
 

@@ -18,6 +18,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.blockchain import sui_rpc, walrus_anchor_service
 from app.services.public_url_service import frontend_base_url
+from app.services.receipt_redaction import mask_receipt_for_public
 
 
 def new_verify_token() -> str:
@@ -117,15 +118,15 @@ def verify_receipt(db: Session, token: str) -> dict[str, Any]:
     valid = all_core and checks["not_tampered"]
 
     network = (settings.sui_network or "testnet").lower()
-    return {
+    payload = {
         "valid": valid,
         "kind": "receipt",
         "verification_status": "verified" if valid else "failed_checks",
-        "title": "Receipt Verified" if valid else "Receipt verification failed",
-        "headline": "Verified on Sui Blockchain" if valid and row.tx_hash else ("Authentic RentDirect receipt" if valid else "Could not verify receipt"),
-        "message": "This receipt is authentic and has not been tampered with."
+        "title": "Receipt verified" if valid else "Verification incomplete",
+        "headline": "Authentic payment record" if valid else "Could not verify this receipt",
+        "message": "This receipt matches our records and has not been altered."
         if valid
-        else "One or more integrity checks failed.",
+        else "One or more checks did not pass. Contact support with your receipt number.",
         "checks": checks,
         "receipt_number": row.receipt_number,
         "status": st,
@@ -142,19 +143,14 @@ def verify_receipt(db: Session, token: str) -> dict[str, Any]:
         "period_label": row.period_label,
         "issued_at": row.issued_at.isoformat() if row.issued_at else None,
         "tx_hash": row.tx_hash,
-        "contract_id": row.contract_id,
         "explorer_url": row.explorer_url or (
             f"https://suiscan.xyz/{network}/tx/{row.tx_hash}" if row.tx_hash else None
         ),
-        "verification_hash": row.verification_hash,
-        "checksum": row.checksum,
-        "digital_signature": row.digital_signature,
-        "smart_summary": row.smart_summary,
         "verification_url": verify_page_url(token),
         "wallet_address": row.wallet_address,
-        **walrus,
         "footer": _footer(),
     }
+    return mask_receipt_for_public(payload)
 
 
 def ensure_lease_verify_token(lease: Lease) -> str:

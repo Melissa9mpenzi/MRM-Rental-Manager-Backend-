@@ -42,7 +42,7 @@ def _payment_splits(tenant: Tenant) -> tuple[float, float]:
             continue
         amt = float(p.amount or 0)
         pm = p.payment_method.value if hasattr(p.payment_method, "value") else str(p.payment_method)
-        if pm in (PaymentMethod.cash.value, PaymentMethod.bank.value, "other"):
+        if pm in (PaymentMethod.bank.value,):
             manual += amt
         else:
             online += amt
@@ -214,6 +214,15 @@ class TenantService:
             notes=data.notes,
         )
         db.add(tenant)
+        db.flush()
+
+        from app.services.lease_service import create_lease_for_tenant
+
+        try:
+            create_lease_for_tenant(db, tenant, owner_id, anchor=True)
+        except ValueError:
+            pass
+
         unit.status = UnitStatus.occupied
         db.commit()
         db.refresh(tenant)
@@ -244,16 +253,53 @@ class TenantService:
             except ValueError:
                 pass
             del payload["status"]
+        new_email = payload.get("email")
+        if new_email is not None:
+            new_email = str(new_email).strip() or None
+            payload["email"] = new_email
+
         for k, v in payload.items():
             if hasattr(t, k):
                 setattr(t, k, v)
+
+        if new_email and t.user_id:
+            from app.models.user import User
+
+            user = db.query(User).filter(User.id == t.user_id).first()
+            if user and (user.email or "").strip().lower() != (new_email or "").strip().lower():
+                clash = (
+                    db.query(User)
+                    .filter(User.email == new_email, User.id != user.id)
+                    .first()
+                )
+                if clash:
+                    from fastapi import HTTPException
+
+                    raise HTTPException(
+                        status_code=409,
+                        detail="That email is already used by another login account.",
+                    )
+                user.email = new_email
+
         db.commit()
         db.refresh(t)
         return self.get_tenant(db, tenant_id, owner_id)
 
     def move_out_tenant(self, db: Session, tenant_id: int, owner_id: int) -> dict:
+        from app.models.lease import Lease, LeaseStatus
+        from datetime import date
+
         t = self._load(db, tenant_id, owner_id)
         t.status = TenantStatus.inactive
+        active_lease = (
+            db.query(Lease)
+            .filter(Lease.tenant_id == t.id, Lease.status == LeaseStatus.active)
+            .first()
+        )
+        if active_lease:
+            active_lease.status = LeaseStatus.terminated
+            active_lease.termination_date = date.today()
+            active_lease.termination_reason = "Tenant moved out"
         if t.unit:
             t.unit.status = UnitStatus.vacant
         db.commit()

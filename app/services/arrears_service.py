@@ -76,7 +76,7 @@ def get_arrears_list(db: Session, owner_id: int) -> list:
             "unit_number":      t.unit.unit_number if t.unit else None,
             "property_name":    t.unit.parent_property.name if t.unit and t.unit.parent_property else None,
             "property_id":      t.unit.parent_property.id if t.unit and t.unit.parent_property else None,
-            "monthly_rent":     float(t.monthly_rent),
+            "monthly_rent":     float(t.monthly_rent or 0),
             **{k: float(v) if isinstance(v, Decimal) else v for k, v in bal.items()},
         })
 

@@ -8,10 +8,12 @@ import enum
 class PaymentMethod(str, enum.Enum):
     mtn_momo  = "mtn_momo"
     airtel    = "airtel"
-    cash      = "cash"
     bank      = "bank"
     sui       = "sui"
-    other     = "other"
+    pesapal   = "pesapal"
+    card      = "card"
+    cash      = "cash"      # legacy records only — not accepted on new payments
+    other     = "other"     # legacy — prefer pesapal/card
 
 
 class PaymentType(str, enum.Enum):
@@ -31,7 +33,7 @@ class Payment(Base):
     owner_id        = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     amount          = Column(Numeric(12, 2), nullable=False)
     payment_type    = Column(Enum(PaymentType), default=PaymentType.rent)
-    payment_method  = Column(Enum(PaymentMethod), default=PaymentMethod.cash)
+    payment_method  = Column(Enum(PaymentMethod), default=PaymentMethod.mtn_momo)
     reference       = Column(String(100), nullable=True)   # MoMo transaction ID
     period_month    = Column(Integer, nullable=False)       # 1-12
     period_year     = Column(Integer, nullable=False)

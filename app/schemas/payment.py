@@ -8,7 +8,7 @@ class PaymentCreate(BaseModel):
     tenant_id:      int
     amount:         Decimal
     payment_type:   Optional[str] = "rent"
-    payment_method: Optional[str] = "cash"
+    payment_method: Optional[str] = "mtn_momo"
     reference:      Optional[str] = None
     period_month:   int
     period_year:    int
