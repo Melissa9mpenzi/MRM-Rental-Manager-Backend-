@@ -92,41 +92,18 @@ def execute_sui_transfer(
 ) -> str:
     """
     Sign and execute a simple SUI transfer from the user's platform wallet.
-    Returns transaction digest. Requires ``pysui`` on the API host.
+    Uses JSON-RPC on Vercel; pysui is optional when installed.
     """
+    from app.services.blockchain import sui_transfer
+
     sk, sender = derive_keypair(user_id)
     recipient = (recipient or "").strip()
     if not recipient.startswith("0x"):
         raise ValueError("Invalid treasury address.")
 
-    try:
-        from pysui import SuiConfig, SyncClient
-        from pysui.sui.sui_txn import SyncTransaction
-    except ImportError as exc:
-        raise RuntimeError(
-            "Platform Sui payments require pysui on the API server. "
-            "Use MoMo/card or link an external wallet."
-        ) from exc
-
-    net = (settings.sui_network or "testnet").lower()
-    rpc = (settings.sui_rpc_url or "").strip()
-    if rpc:
-        cfg = SuiConfig.user_config(rpc_url=rpc)
-    else:
-        cfg = SuiConfig.default_config()
-
-    client = SyncClient(cfg)
-    pk_hex = sk.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    ).hex()
-    client.config.set_active_address(sender)
-
-    txn = SyncTransaction(client=client)
-    txn.transfer_sui(recipient=recipient, amount=amount_mist)
-    result = txn.execute(gas_budget="10000000")
-    if not result.is_ok():
-        raise ValueError(str(result.result_string or "Sui transfer failed"))
-    digest = str(result.result_data.digest)
-    return digest
+    return sui_transfer.transfer_sui(
+        sk,
+        sender=sender,
+        recipient=recipient,
+        amount_mist=amount_mist,
+    )

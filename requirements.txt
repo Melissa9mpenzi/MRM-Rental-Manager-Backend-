@@ -16,7 +16,8 @@ qrcode[pil]==8.0
 httpx==0.27.0
 firebase-admin==6.5.0
 cloudinary
-# Platform Sui wallet signing (email → auto address → server-side pay on testnet)
-pysui>=0.76.0
+# Platform Sui wallet signing (pin betterproto2 — pysui breaks on 0.10.x)
+betterproto2==0.9.1
+pysui>=0.76.0,<0.90.0
 # Privy social auth + embedded wallets (Google / Apple / email)
 pyotp>=2.9.0
