@@ -71,11 +71,13 @@ def gateway_public_status() -> dict:
         "mock_enabled": mock,
         "country": "UG",
         "supports": {
-            "mtn_momo": name in ("mtn_momo", "pesapal", "mock"),
-            "airtel": name in ("pesapal", "mock"),
-            "card": name in ("pesapal", "flutterwave", "mock"),
+            "mtn_momo": name in ("mtn_momo", "pesapal", "mock") or is_mtn_momo_configured(),
+            "mtn_momo_in_app": is_mtn_momo_configured(),
+            "airtel": name in ("pesapal", "mock") or is_pesapal_configured(),
+            "card": name in ("pesapal", "flutterwave", "mock") or is_pesapal_configured(),
             "sui": True,
         },
+        "brand_name": (settings.email_brand_name or "RentDirect UG").strip(),
         "requires_webhook_https": settings.environment == "production",
         "setup_hint": _setup_hint(name, configured, mock),
     }

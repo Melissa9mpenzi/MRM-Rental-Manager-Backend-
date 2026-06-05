@@ -15,16 +15,12 @@ from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.payment_gateway import CheckoutNextAction, CheckoutOut, InitiateCheckoutBody
 from app.services import payment_service
-from app.services.gateway import get_gateway_provider
+from app.services.gateway import get_gateway_provider_for_method
 from app.services.gateway.config import (
-    active_provider_name,
     assert_live_gateway_ready,
     gateway_public_status,
     is_mock_allowed,
 )
-from app.services.gateway.flutterwave_provider import FlutterwaveGatewayProvider
-from app.services.gateway.mtn_momo_provider import MtnMomoGatewayProvider
-from app.services.gateway.pesapal_provider import PesapalGatewayProvider
 from app.services.gateway.sui_provider import SuiGatewayProvider
 from app.services.blockchain import blockchain_service, sui_rpc
 from app.utils.response import error_response
@@ -121,19 +117,22 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
     else:
         assert_live_gateway_ready()
 
-    gw_name = "sui" if use_sui else active_provider_name()
+    reference = f"rd_{uuid.uuid4().hex[:24]}"
+    provider = SuiGatewayProvider() if use_sui else get_gateway_provider_for_method(method)
 
-    if gw_name == "mtn_momo" and method == "airtel":
+    if method == "airtel" and provider.name != "pesapal":
         raise error_response(
-            "Airtel Money requires Pesapal. Set PAYMENT_GATEWAY_PROVIDER=pesapal in API .env, "
+            "Airtel Money requires Pesapal. Set PAYMENT_GATEWAY_PROVIDER=pesapal and add Pesapal keys, "
             "or pay with MTN MoMo.",
             status_code=400,
         )
-    if gw_name == "mtn_momo" and method not in ("mtn_momo", "mtn", "mobile_money"):
-        raise error_response("This server uses MTN MoMo API for MTN only. Use Pesapal for Airtel/card.", status_code=400)
+    if method in ("pesapal", "card", "visa", "mastercard") and provider.name != "pesapal":
+        raise error_response(
+            "Card / Pesapal checkout needs PESAPAL_CONSUMER_KEY and PESAPAL_CONSUMER_SECRET on the API server.",
+            status_code=400,
+        )
 
-    reference = f"rd_{uuid.uuid4().hex[:24]}"
-    provider = SuiGatewayProvider() if use_sui else get_gateway_provider()
+    brand = (settings.email_brand_name or "RentDirect UG").strip()
     redirect_url = (
         f"{settings.frontend_base_url.rstrip('/')}/tenant/pay?checkout={reference}&status=return"
     )
@@ -167,7 +166,7 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
             payment_method=method,
             phone=phone,
             email=checkout.payer_email,
-            title=f"Rent {invoice.invoice_number}",
+            title=f"{brand} — Rent {invoice.invoice_number}",
             redirect_url=redirect_url,
         )
     except ValueError as exc:
@@ -419,7 +418,7 @@ def execute_platform_sui_checkout(db: Session, user: User, reference: str) -> di
             amount_mist=amount_mist,
         )
     except RuntimeError as exc:
-        raise error_response(str(exc), status_code=503) from exc
+        raise error_response(str(exc), status_code=503) from exc  # pysui missing on host
     except ValueError as exc:
         raise error_response(str(exc), status_code=400) from exc
     except Exception as exc:
