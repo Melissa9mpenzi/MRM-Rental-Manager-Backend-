@@ -124,7 +124,8 @@ def get_pending_invitation(
     """
     from app.services.invoice_service import resolve_tenant_for_user
 
-    if resolve_tenant_for_user(db, current_user):
+    linked = db.query(Tenant).filter(Tenant.user_id == current_user.id).first()
+    if linked or resolve_tenant_for_user(db, current_user):
         return success_response(data=None, message="Already linked to a rental record.")
 
     pending = _find_unlinked_tenant_for_email(db, current_user.email)
