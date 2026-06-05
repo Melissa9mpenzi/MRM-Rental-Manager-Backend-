@@ -46,11 +46,6 @@ def effective_sui_treasury_address() -> str:
     explicit = (settings.sui_treasury_address or "").strip()
     if explicit:
         return explicit
-    secret = (settings.secret_key or "").strip()
-    if not secret:
-        return ""
-    if settings.is_production and secret == "change-me-in-production-use-long-random-string":
-        return ""
     return derive_platform_treasury_address()
 
 
