@@ -77,11 +77,12 @@ def extract_profile_from_privy_user(privy_user) -> dict[str, Optional[str]]:
                 email = str(acct["email"]).strip().lower()
             if acct.get("name") and not full_name:
                 full_name = str(acct["name"]).strip()
-        elif atype == "apple_oauth":
+        if atype == "apple_oauth":
             if acct.get("email"):
                 email = str(acct["email"]).strip().lower()
-        if acct.get("chain_type") == "sui" and acct.get("address"):
-            sui_address = str(acct["address"]).strip()
+        if atype == "wallet" or acct.get("chain_type") == "sui" or acct.get("chainType") == "sui":
+            if acct.get("address"):
+                sui_address = str(acct["address"]).strip()
 
     if not full_name and email:
         full_name = email.split("@")[0].replace(".", " ").title()

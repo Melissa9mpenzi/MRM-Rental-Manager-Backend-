@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user, require_tenant
 from app.models.user import User
-from app.schemas.blockchain import ConfirmSuiTxBody, LinkWalletBody, ReleaseEscrowBody
+from app.schemas.blockchain import ConfirmSuiTxBody, LinkWalletBody, PrivyPaySuiBody, ReleaseEscrowBody
 from app.services import payment_gateway_service
 from app.services.blockchain import blockchain_service, walrus_anchor_service
 from app.services.gateway.config import gateway_public_status
@@ -113,6 +113,20 @@ def release_escrow(
     rows = blockchain_service.list_escrows_for_user(db, current_user)
     row = next((r for r in rows if r["id"] == hold.id), None)
     return success_response(data=row or {"id": hold.id}, message="Escrow released.")
+
+
+@router.post("/payments/checkout/{reference}/pay-privy-sui")
+def pay_privy_sui(
+    reference: str,
+    body: PrivyPaySuiBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_tenant),
+):
+    """Pay rent with Privy embedded Sui wallet (server signs via Privy API — no pysui)."""
+    data = payment_gateway_service.pay_privy_sui_checkout(
+        db, current_user, reference, body.access_token
+    )
+    return success_response(data=data, message="Sui payment submitted via Privy wallet.")
 
 
 @router.post("/payments/checkout/{reference}/pay-platform-sui")

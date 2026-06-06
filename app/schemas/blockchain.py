@@ -12,5 +12,9 @@ class ConfirmSuiTxBody(BaseModel):
     wallet_address: Optional[str] = Field(None, max_length=80)
 
 
+class PrivyPaySuiBody(BaseModel):
+    access_token: str = Field(..., min_length=20, description="Privy access token from embedded wallet session")
+
+
 class ReleaseEscrowBody(BaseModel):
     release_tx_digest: Optional[str] = Field(None, max_length=128)
