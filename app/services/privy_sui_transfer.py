@@ -29,11 +29,10 @@ def _account_payload(account: Any) -> dict[str, Any]:
     return {}
 
 
-def find_privy_sui_wallet(privy_user_id: str) -> Optional[dict[str, str]]:
-    """Return Privy wallet id, Sui address, and public key for raw_sign."""
+def _collect_sui_wallet_candidates(privy_user_id: str) -> list[dict[str, Any]]:
     privy_user = fetch_privy_user(privy_user_id)
     if not privy_user:
-        return None
+        return []
 
     candidates: list[dict[str, Any]] = []
     for raw in getattr(privy_user, "linked_accounts", None) or []:
@@ -48,22 +47,59 @@ def find_privy_sui_wallet(privy_user_id: str) -> Optional[dict[str, str]]:
                     candidates.append(data)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Privy wallet list failed: %s", exc)
+    return candidates
 
-    for acct in candidates:
-        chain = str(acct.get("chain_type") or acct.get("chainType") or "").lower()
-        atype = str(acct.get("type") or "").lower()
-        if chain != "sui" and atype not in ("sui", "sui_wallet"):
-            continue
-        wallet_id = acct.get("id") or acct.get("wallet_id")
-        address = acct.get("address")
-        public_key = acct.get("public_key") or acct.get("publicKey")
-        if wallet_id and address:
-            return {
-                "id": str(wallet_id),
-                "address": str(address).strip(),
-                "public_key": str(public_key or "").strip(),
-            }
+
+def _normalize_sui_wallet(acct: dict[str, Any]) -> Optional[dict[str, str]]:
+    chain = str(acct.get("chain_type") or acct.get("chainType") or "").lower()
+    atype = str(acct.get("type") or "").lower()
+    if chain != "sui" and atype not in ("sui", "sui_wallet"):
+        return None
+    wallet_id = acct.get("id") or acct.get("wallet_id")
+    address = acct.get("address")
+    public_key = acct.get("public_key") or acct.get("publicKey")
+    if wallet_id and address:
+        return {
+            "id": str(wallet_id),
+            "address": str(address).strip(),
+            "public_key": str(public_key or "").strip(),
+        }
     return None
+
+
+def find_privy_sui_wallet(privy_user_id: str) -> Optional[dict[str, str]]:
+    """Return Privy wallet id, Sui address, and public key for raw_sign."""
+    for acct in _collect_sui_wallet_candidates(privy_user_id):
+        wallet = _normalize_sui_wallet(acct)
+        if wallet:
+            return wallet
+    return None
+
+
+def find_privy_sui_wallet_by_address(privy_user_id: str, sui_address: str) -> Optional[dict[str, str]]:
+    target = (sui_address or "").strip().lower()
+    if not target:
+        return None
+    for acct in _collect_sui_wallet_candidates(privy_user_id):
+        wallet = _normalize_sui_wallet(acct)
+        if wallet and wallet["address"].lower() == target:
+            return wallet
+    return None
+
+
+def resolve_privy_sui_public_key(privy_did: str, sui_address: str) -> dict[str, str]:
+    """Fetch Sui public key via Privy server API (linked accounts often omit it)."""
+    wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
+    if not wallet:
+        raise ValueError(
+            "No Privy Sui wallet found. Sign in with Google, Apple, or email on the Sui panel, then retry."
+        )
+    pub_key_bytes = _decode_public_key(wallet.get("public_key", ""), wallet_id=wallet.get("id"))
+    return {
+        "wallet_id": wallet["id"],
+        "address": wallet["address"],
+        "public_key": pub_key_bytes.hex(),
+    }
 
 
 def _message_with_intent(tx_bytes: bytes) -> bytes:

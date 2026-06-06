@@ -5,11 +5,19 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user, require_tenant
 from app.models.user import User
-from app.schemas.blockchain import ConfirmSuiTxBody, FaucetWalletBody, LinkWalletBody, ReleaseEscrowBody
+from app.schemas.blockchain import (
+    ConfirmSuiTxBody,
+    FaucetWalletBody,
+    LinkWalletBody,
+    PrivyWalletPubkeyBody,
+    ReleaseEscrowBody,
+)
+from app.services import privy_sui_transfer
+from app.services.privy_token_service import is_privy_configured, verify_access_token
+from app.utils.response import error_response, success_response
 from app.services import payment_gateway_service
 from app.services.blockchain import blockchain_service, walrus_anchor_service
 from app.services.gateway.config import gateway_public_status
-from app.utils.response import success_response
 
 router = APIRouter(tags=["Blockchain"])
 
@@ -69,6 +77,37 @@ def faucet_wallet(
     data = blockchain_service.request_faucet_for_address(db, current_user, body.sui_address)
     msg = "Testnet SUI requested — wait about a minute, then try paying again." if data.get("requested") else "Faucet request sent (may be rate-limited). Try again in a few minutes."
     return success_response(data=data, message=msg)
+
+
+@router.post("/blockchain/wallet/privy-pubkey")
+def privy_wallet_pubkey(
+    body: PrivyWalletPubkeyBody,
+    current_user: User = Depends(get_current_user),
+):
+    """Resolve Privy embedded Sui wallet public key (requires API app secret)."""
+    if not is_privy_configured():
+        raise error_response(
+            "Privy is not configured on the API. Set PRIVY_APP_ID and PRIVY_APP_SECRET.",
+            status_code=503,
+        )
+
+    claims = verify_access_token((body.access_token or "").strip())
+    if not claims:
+        raise error_response(
+            "Privy session expired or invalid. Reconnect with Google, Apple, or email, then retry.",
+            status_code=401,
+        )
+
+    privy_did = str(claims.get("user_id") or "").strip()
+    if not privy_did:
+        raise error_response("Invalid Privy token.", status_code=400)
+
+    try:
+        data = privy_sui_transfer.resolve_privy_sui_public_key(privy_did, body.sui_address)
+    except ValueError as exc:
+        raise error_response(str(exc), status_code=400) from exc
+
+    return success_response(data=data)
 
 
 @router.post("/blockchain/wallet/link")
