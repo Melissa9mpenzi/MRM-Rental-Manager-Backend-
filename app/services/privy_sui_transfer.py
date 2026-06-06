@@ -16,9 +16,45 @@ from app.services.blockchain.sui_transfer import (
     _execute_signed_tx,
     _largest_sui_coin,
 )
+from app.services.privy_authorization import authorization_headers, is_authorization_signature_error
 from app.services.privy_token_service import fetch_privy_user, is_privy_configured
 
 logger = logging.getLogger(__name__)
+
+PRIVY_API_BASE = "https://api.privy.io/v1"
+
+
+def _privy_basic_auth() -> tuple[str, str]:
+    app_id = (settings.privy_app_id or "").strip()
+    secret = (settings.privy_app_secret or "").strip()
+    basic = base64.b64encode(f"{app_id}:{secret}".encode()).decode()
+    return app_id, basic
+
+
+def _privy_request(
+    method: str,
+    path: str,
+    *,
+    body: Optional[dict[str, Any]] = None,
+    timeout: float = 45.0,
+) -> httpx.Response:
+    app_id, basic = _privy_basic_auth()
+    url = f"{PRIVY_API_BASE}{path}"
+    json_body = body or {}
+    headers = {
+        "Authorization": f"Basic {basic}",
+        "privy-app-id": app_id,
+        "Content-Type": "application/json",
+        **authorization_headers(method=method, url=url, body=json_body),
+    }
+    with httpx.Client(timeout=timeout) as http:
+        if method.upper() == "GET":
+            return http.get(url, headers=headers)
+        if method.upper() == "PATCH":
+            return http.patch(url, headers=headers, json=json_body)
+        if method.upper() == "POST":
+            return http.post(url, headers=headers, json=json_body)
+        raise ValueError(f"Unsupported Privy HTTP method: {method}")
 
 
 def _account_payload(account: Any) -> dict[str, Any]:
@@ -174,24 +210,14 @@ def _serialize_sui_signature(sig_bytes: bytes, pub_key_bytes: bytes) -> str:
 
 
 def _get_wallet_policy_ids(wallet_id: str) -> list[str]:
-    app_id = (settings.privy_app_id or "").strip()
-    secret = (settings.privy_app_secret or "").strip()
-    basic = base64.b64encode(f"{app_id}:{secret}".encode()).decode()
     try:
-        with httpx.Client(timeout=20.0) as http:
-            res = http.get(
-                f"https://api.privy.io/v1/wallets/{wallet_id}",
-                headers={
-                    "Authorization": f"Basic {basic}",
-                    "privy-app-id": app_id,
-                },
-            )
-            if res.status_code >= 400:
-                return []
-            data = res.json()
-            payload = data.get("data") if isinstance(data.get("data"), dict) else data
-            ids = payload.get("policy_ids") or payload.get("policyIds") or []
-            return [str(x) for x in ids if x]
+        res = _privy_request("GET", f"/wallets/{wallet_id}", timeout=20.0)
+        if res.status_code >= 400:
+            return []
+        data = res.json()
+        payload = data.get("data") if isinstance(data.get("data"), dict) else data
+        ids = payload.get("policy_ids") or payload.get("policyIds") or []
+        return [str(x) for x in ids if x]
     except Exception as exc:  # noqa: BLE001
         logger.warning("Privy wallet get failed for %s: %s", wallet_id[:8], exc)
         return []
@@ -199,31 +225,28 @@ def _get_wallet_policy_ids(wallet_id: str) -> list[str]:
 
 def _attach_sui_wallet_policy(wallet_id: str, policy_id: str) -> tuple[bool, str]:
     """PATCH wallet with policy_ids. Returns (ok, detail)."""
-    app_id = (settings.privy_app_id or "").strip()
-    secret = (settings.privy_app_secret or "").strip()
-    basic = base64.b64encode(f"{app_id}:{secret}".encode()).decode()
-
     try:
-        with httpx.Client(timeout=20.0) as http:
-            res = http.patch(
-                f"https://api.privy.io/v1/wallets/{wallet_id}",
-                headers={
-                    "Authorization": f"Basic {basic}",
-                    "privy-app-id": app_id,
-                    "Content-Type": "application/json",
-                },
-                json={"policy_ids": [policy_id]},
+        res = _privy_request(
+            "PATCH",
+            f"/wallets/{wallet_id}",
+            body={"policy_ids": [policy_id]},
+            timeout=20.0,
+        )
+        if res.status_code >= 400:
+            detail = res.text[:400] or res.reason_phrase or "unknown error"
+            logger.warning(
+                "Privy wallet policy attach failed (%s) for %s: %s",
+                res.status_code,
+                wallet_id[:8],
+                detail,
             )
-            if res.status_code >= 400:
-                detail = res.text[:240] or res.reason_phrase or "unknown error"
-                logger.warning(
-                    "Privy wallet policy attach failed (%s) for %s: %s",
-                    res.status_code,
-                    wallet_id[:8],
-                    detail,
+            if is_authorization_signature_error(res.status_code, detail):
+                return False, (
+                    "Server needs PRIVY_AUTHORIZATION_PRIVATE_KEY (policy/wallet has an owner). "
+                    "Attach the policy manually in Dashboard → Wallets, or remove the policy owner."
                 )
-                return False, detail
-            return True, "attached"
+            return False, detail
+        return True, "attached"
     except Exception as exc:  # noqa: BLE001
         logger.warning("Privy wallet policy attach failed for %s: %s", wallet_id[:8], exc)
         return False, str(exc)
@@ -284,37 +307,29 @@ def _raw_sign_sui_intent(wallet_id: str, intent_message: bytes) -> bytes:
 
     _ensure_sui_wallet_policy(wallet_id)
 
-    app_id = (settings.privy_app_id or "").strip()
-    secret = (settings.privy_app_secret or "").strip()
-    basic = base64.b64encode(f"{app_id}:{secret}".encode()).decode()
-
-    with httpx.Client(timeout=45.0) as http:
-        res = http.post(
-            f"https://api.privy.io/v1/wallets/{wallet_id}/raw_sign",
-            headers={
-                "Authorization": f"Basic {basic}",
-                "privy-app-id": app_id,
-                "Content-Type": "application/json",
-            },
-            json={
-                "params": {
-                    "bytes": intent_message.hex(),
-                    "encoding": "hex",
-                    "hash_function": "blake2b256",
-                }
-            },
-        )
-        if res.status_code >= 400:
-            detail = res.text[:400] or res.reason_phrase or "unknown error"
-            if "policy" in detail.lower():
-                raise ValueError(
-                    f"Privy policy blocked raw_sign: {detail}. "
-                    "In Dashboard → Wallets, open your Sui wallet and confirm your ALLOW policy is attached. "
-                    "The rule must use method signTransactionBytes and allow SplitCoins, TransferObjects, MergeCoins "
-                    "(or add an unconditional ALLOW rule with no conditions)."
-                )
-            raise ValueError(f"Privy raw_sign failed ({res.status_code}): {detail}")
-        data = res.json()
+    body = {
+        "params": {
+            "bytes": intent_message.hex(),
+            "encoding": "hex",
+            "hash_function": "blake2b256",
+        }
+    }
+    res = _privy_request("POST", f"/wallets/{wallet_id}/raw_sign", body=body, timeout=45.0)
+    if res.status_code >= 400:
+        detail = res.text[:400] or res.reason_phrase or "unknown error"
+        if is_authorization_signature_error(res.status_code, detail):
+            raise ValueError(
+                "Privy server signing needs PRIVY_AUTHORIZATION_PRIVATE_KEY on the API "
+                "(your policy or wallet has an owner). Pay will use browser signing instead — "
+                "attach your ALLOW policy to the Sui wallet in Dashboard → Wallets."
+            )
+        if "policy" in detail.lower():
+            raise ValueError(
+                f"Privy policy blocked raw_sign: {detail}. "
+                "Confirm your ALLOW policy is attached to this Sui wallet in Dashboard → Wallets."
+            )
+        raise ValueError(f"Privy raw_sign failed ({res.status_code}): {detail}")
+    data = res.json()
 
     signature = data.get("signature")
     if signature is None and isinstance(data.get("data"), dict):

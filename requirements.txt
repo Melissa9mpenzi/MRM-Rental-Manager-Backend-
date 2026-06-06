@@ -22,4 +22,5 @@ pysui>=0.76.0,<0.90.0
 # Privy social auth + embedded Sui wallets (Google / Apple / email)
 privy-client>=0.1.0
 base58>=2.1.0
+rfc8785>=0.1.4
 pyotp>=2.9.0

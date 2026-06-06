@@ -45,6 +45,8 @@ PRIVY_APP_ID=your-privy-app-id
 PRIVY_APP_SECRET=your-privy-app-secret
 # Optional — policy ID from Dashboard → Policies (auto-attached before pay)
 PRIVY_SUI_POLICY_ID=
+# Required only if policy/wallet has an owner in Privy Dashboard
+PRIVY_AUTHORIZATION_PRIVATE_KEY=
 ```
 
 Install API dependency:
@@ -154,6 +156,20 @@ Privy **defaults to DENY** when no rule matches. Common fixes:
 3. **Dashboard → Wallets → your Sui wallet → Policies** — confirm your policy ID appears on **that exact wallet** (not only in env vars).
 4. **Embedded wallets → Default policy** — set your ALLOW policy as the default for new Sui embedded wallets.
 5. Check Vercel backend env: `PRIVY_SUI_POLICY_ID` must match the 24-character ID from Dashboard → Policies (not the app ID).
+
+### Authorization signature 401 (`privy-authorization-signature`)
+
+If you set an **owner** on your policy or wallet (Privy recommends this for production), server `raw_sign` and policy attach need an **authorization private key**:
+
+**Easiest (hackathon):** Edit your Sui policy in Dashboard → **remove the owner**. Do not set a wallet owner on embedded wallets. App secret alone is then enough.
+
+**Production:** Dashboard → **Authorization keys** → create key → copy private key → Vercel:
+
+```env
+PRIVY_AUTHORIZATION_PRIVATE_KEY=wallet-auth:...   # or raw base64 key from Privy
+```
+
+Use the **same key** as the policy owner. Without this env var, RentDirect pays via **browser signing** (still works if the policy is attached to the wallet in Dashboard → Wallets).
 
 ### Optional: cap transfers to your treasury only
 

@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     privy_app_secret: str = ""
     # Optional: auto-attach Sui policy (SplitCoins + TransferObjects) before raw_sign
     privy_sui_policy_id: str = ""
+    # Required when Privy policy/wallet has an owner (Dashboard → Authorization keys)
+    privy_authorization_private_key: str = ""
 
     # Payment gateway (Uganda): mtn_momo | pesapal | flutterwave | mock
     payment_gateway_provider: str = "mtn_momo"
