@@ -87,9 +87,18 @@ def find_privy_sui_wallet_by_address(privy_user_id: str, sui_address: str) -> Op
     return None
 
 
-def resolve_privy_sui_public_key(privy_did: str, sui_address: str) -> dict[str, str]:
+def resolve_privy_sui_public_key(
+    privy_did: str,
+    sui_address: str,
+    *,
+    wallet_id: Optional[str] = None,
+) -> dict[str, str]:
     """Fetch Sui public key via Privy server API (linked accounts often omit it)."""
-    wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
+    wallet: Optional[dict[str, str]] = None
+    if wallet_id:
+        wallet = {"id": str(wallet_id).strip(), "address": (sui_address or "").strip()}
+    if not wallet or not wallet.get("id"):
+        wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
     if not wallet:
         raise ValueError(
             "No Privy Sui wallet found. Sign in with Google, Apple, or email on the Sui panel, then retry."
@@ -164,6 +173,30 @@ def _serialize_sui_signature(sig_bytes: bytes, pub_key_bytes: bytes) -> str:
     return base64.b64encode(payload).decode()
 
 
+def _get_wallet_policy_ids(wallet_id: str) -> list[str]:
+    app_id = (settings.privy_app_id or "").strip()
+    secret = (settings.privy_app_secret or "").strip()
+    basic = base64.b64encode(f"{app_id}:{secret}".encode()).decode()
+    try:
+        with httpx.Client(timeout=20.0) as http:
+            res = http.get(
+                f"https://api.privy.io/v1/wallets/{wallet_id}",
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "privy-app-id": app_id,
+                },
+            )
+            if res.status_code >= 400:
+                return []
+            data = res.json()
+            payload = data.get("data") if isinstance(data.get("data"), dict) else data
+            ids = payload.get("policy_ids") or payload.get("policyIds") or []
+            return [str(x) for x in ids if x]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Privy wallet get failed for %s: %s", wallet_id[:8], exc)
+        return []
+
+
 def _attach_sui_wallet_policy(wallet_id: str, policy_id: str) -> tuple[bool, str]:
     """PATCH wallet with policy_ids. Returns (ok, detail)."""
     app_id = (settings.privy_app_id or "").strip()
@@ -204,12 +237,39 @@ def _ensure_sui_wallet_policy(wallet_id: str) -> dict[str, Any]:
     if not wallet_id:
         return {"configured": True, "attached": False, "detail": "missing wallet id"}
 
+    existing = _get_wallet_policy_ids(wallet_id)
+    if policy_id in existing:
+        return {
+            "configured": True,
+            "attached": True,
+            "verified": True,
+            "policy_id": policy_id,
+            "detail": "already attached",
+        }
+
     ok, detail = _attach_sui_wallet_policy(wallet_id, policy_id)
-    return {"configured": True, "attached": ok, "policy_id": policy_id, "detail": detail}
+    verified = policy_id in _get_wallet_policy_ids(wallet_id) if ok else False
+    return {
+        "configured": True,
+        "attached": ok and verified,
+        "verified": verified,
+        "policy_id": policy_id,
+        "detail": detail if ok else detail,
+        "wallet_policy_ids": _get_wallet_policy_ids(wallet_id) if ok else existing,
+    }
 
 
-def ensure_privy_sui_wallet_policy(privy_did: str, sui_address: str) -> dict[str, Any]:
-    wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
+def ensure_privy_sui_wallet_policy(
+    privy_did: str,
+    sui_address: str,
+    *,
+    wallet_id: Optional[str] = None,
+) -> dict[str, Any]:
+    wallet: Optional[dict[str, str]] = None
+    if wallet_id:
+        wallet = {"id": str(wallet_id).strip(), "address": (sui_address or "").strip()}
+    if not wallet or not wallet.get("id"):
+        wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
     if not wallet:
         raise ValueError(
             "No Privy Sui wallet found. Sign in with Google, Apple, or email on the Sui panel, then retry."
@@ -245,12 +305,13 @@ def _raw_sign_sui_intent(wallet_id: str, intent_message: bytes) -> bytes:
             },
         )
         if res.status_code >= 400:
-            detail = res.text[:240] or res.reason_phrase or "unknown error"
-            if res.status_code == 400 and "policy" in detail.lower():
+            detail = res.text[:400] or res.reason_phrase or "unknown error"
+            if "policy" in detail.lower():
                 raise ValueError(
-                    "Privy blocked this Sui payment (policy). In Dashboard → Wallets, attach your Sui "
-                    "ALLOW policy (SplitCoins + TransferObjects + MergeCoins) to this embedded wallet, "
-                    "or set PRIVY_SUI_POLICY_ID on the API and redeploy."
+                    f"Privy policy blocked raw_sign: {detail}. "
+                    "In Dashboard → Wallets, open your Sui wallet and confirm your ALLOW policy is attached. "
+                    "The rule must use method signTransactionBytes and allow SplitCoins, TransferObjects, MergeCoins "
+                    "(or add an unconditional ALLOW rule with no conditions)."
                 )
             raise ValueError(f"Privy raw_sign failed ({res.status_code}): {detail}")
         data = res.json()

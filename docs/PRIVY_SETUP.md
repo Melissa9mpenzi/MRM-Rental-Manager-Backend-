@@ -145,6 +145,16 @@ Creating a policy alone is not enough — each **embedded Sui wallet** must have
 
 Wallets created **before** the policy existed will keep failing until you attach the policy or disconnect and create a fresh Sui wallet after a default policy is set.
 
+### Still blocked after creating the policy?
+
+Privy **defaults to DENY** when no rule matches. Common fixes:
+
+1. **Add a catch-all ALLOW rule** (same policy, second rule): method `signTransactionBytes`, action `ALLOW`, **no conditions** — allows any Sui command.
+2. **Remove DENY rules** — DENY always wins over ALLOW.
+3. **Dashboard → Wallets → your Sui wallet → Policies** — confirm your policy ID appears on **that exact wallet** (not only in env vars).
+4. **Embedded wallets → Default policy** — set your ALLOW policy as the default for new Sui embedded wallets.
+5. Check Vercel backend env: `PRIVY_SUI_POLICY_ID` must match the 24-character ID from Dashboard → Policies (not the app ID).
+
 ### Optional: cap transfers to your treasury only
 
 Add a second ALLOW rule with **Field source** `sui_transfer_objects_command`, **Field** `recipient`, **Operator** `eq`, **Value** = your `SUI_TREASURY_ADDRESS` (from Vercel backend env).

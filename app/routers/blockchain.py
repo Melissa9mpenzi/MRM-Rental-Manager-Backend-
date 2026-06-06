@@ -103,7 +103,11 @@ def privy_wallet_pubkey(
         raise error_response("Invalid Privy token.", status_code=400)
 
     try:
-        data = privy_sui_transfer.resolve_privy_sui_public_key(privy_did, body.sui_address)
+        data = privy_sui_transfer.resolve_privy_sui_public_key(
+            privy_did,
+            body.sui_address,
+            wallet_id=body.wallet_id,
+        )
     except ValueError as exc:
         raise error_response(str(exc), status_code=400) from exc
 
@@ -134,7 +138,11 @@ def privy_wallet_policy(
         raise error_response("Invalid Privy token.", status_code=400)
 
     try:
-        data = privy_sui_transfer.ensure_privy_sui_wallet_policy(privy_did, body.sui_address)
+        data = privy_sui_transfer.ensure_privy_sui_wallet_policy(
+            privy_did,
+            body.sui_address,
+            wallet_id=body.wallet_id,
+        )
     except ValueError as exc:
         raise error_response(str(exc), status_code=400) from exc
 
