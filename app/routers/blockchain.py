@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user, require_tenant
 from app.models.user import User
-from app.schemas.blockchain import ConfirmSuiTxBody, LinkWalletBody, ReleaseEscrowBody
+from app.schemas.blockchain import ConfirmSuiTxBody, FaucetWalletBody, LinkWalletBody, ReleaseEscrowBody
 from app.services import payment_gateway_service
 from app.services.blockchain import blockchain_service, walrus_anchor_service
 from app.services.gateway.config import gateway_public_status
@@ -57,6 +57,18 @@ def ensure_wallet(db: Session = Depends(get_db), current_user: User = Depends(ge
     """Idempotent — creates platform Sui address for this email account if missing."""
     data = blockchain_service.ensure_platform_wallet(db, current_user, request_faucet=True)
     return success_response(data=data, message="RentDirect Sui wallet ready.")
+
+
+@router.post("/blockchain/wallet/faucet")
+def faucet_wallet(
+    body: FaucetWalletBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Request testnet SUI gas for the tenant's Privy or linked wallet."""
+    data = blockchain_service.request_faucet_for_address(db, current_user, body.sui_address)
+    msg = "Testnet SUI requested — wait about a minute, then try paying again." if data.get("requested") else "Faucet request sent (may be rate-limited). Try again in a few minutes."
+    return success_response(data=data, message=msg)
 
 
 @router.post("/blockchain/wallet/link")

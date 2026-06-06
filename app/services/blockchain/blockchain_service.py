@@ -144,6 +144,29 @@ def link_wallet(
     return get_primary_wallet(db, user)
 
 
+def request_faucet_for_address(db: Session, user: User, sui_address: str) -> dict:
+    """Request testnet gas for a wallet the user owns (e.g. Privy embedded address)."""
+    addr = (sui_address or "").strip()
+    if not addr.startswith("0x") or len(addr) < 10:
+        raise error_response("Invalid Sui address.", status_code=400)
+
+    owned = {
+        (row.sui_address or "").lower()
+        for row in db.query(BlockchainWallet).filter(BlockchainWallet.user_id == user.id).all()
+    }
+    if addr.lower() not in owned:
+        link_wallet(db, user, addr, wallet_name="Privy Wallet", wallet_source="privy")
+        requested = True
+    else:
+        requested = wallet_provision.request_testnet_gas(addr)
+    return {
+        "requested": requested,
+        "address": addr,
+        "network": (settings.sui_network or "testnet").lower(),
+        "hint": "Wait 30–60 seconds for testnet SUI to arrive, then pay again.",
+    }
+
+
 def get_primary_wallet(db: Session, user: User) -> dict:
     row = (
         db.query(BlockchainWallet)
