@@ -110,6 +110,37 @@ def privy_wallet_pubkey(
     return success_response(data=data)
 
 
+@router.post("/blockchain/wallet/privy-policy")
+def privy_wallet_policy(
+    body: PrivyWalletPubkeyBody,
+    current_user: User = Depends(get_current_user),
+):
+    """Attach PRIVY_SUI_POLICY_ID to the user's embedded Sui wallet before raw_sign."""
+    if not is_privy_configured():
+        raise error_response(
+            "Privy is not configured on the API. Set PRIVY_APP_ID and PRIVY_APP_SECRET.",
+            status_code=503,
+        )
+
+    claims = verify_access_token((body.access_token or "").strip())
+    if not claims:
+        raise error_response(
+            "Privy session expired or invalid. Reconnect with Google, Apple, or email, then retry.",
+            status_code=401,
+        )
+
+    privy_did = str(claims.get("user_id") or "").strip()
+    if not privy_did:
+        raise error_response("Invalid Privy token.", status_code=400)
+
+    try:
+        data = privy_sui_transfer.ensure_privy_sui_wallet_policy(privy_did, body.sui_address)
+    except ValueError as exc:
+        raise error_response(str(exc), status_code=400) from exc
+
+    return success_response(data=data)
+
+
 @router.post("/blockchain/wallet/link")
 def link_wallet(
     body: LinkWalletBody,

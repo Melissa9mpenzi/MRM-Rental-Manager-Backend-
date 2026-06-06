@@ -95,10 +95,12 @@ def resolve_privy_sui_public_key(privy_did: str, sui_address: str) -> dict[str, 
             "No Privy Sui wallet found. Sign in with Google, Apple, or email on the Sui panel, then retry."
         )
     pub_key_bytes = _decode_public_key(wallet.get("public_key", ""), wallet_id=wallet.get("id"))
+    policy_status = _ensure_sui_wallet_policy(wallet["id"])
     return {
         "wallet_id": wallet["id"],
         "address": wallet["address"],
         "public_key": pub_key_bytes.hex(),
+        **policy_status,
     }
 
 
@@ -162,9 +164,65 @@ def _serialize_sui_signature(sig_bytes: bytes, pub_key_bytes: bytes) -> str:
     return base64.b64encode(payload).decode()
 
 
+def _attach_sui_wallet_policy(wallet_id: str, policy_id: str) -> tuple[bool, str]:
+    """PATCH wallet with policy_ids. Returns (ok, detail)."""
+    app_id = (settings.privy_app_id or "").strip()
+    secret = (settings.privy_app_secret or "").strip()
+    basic = base64.b64encode(f"{app_id}:{secret}".encode()).decode()
+
+    try:
+        with httpx.Client(timeout=20.0) as http:
+            res = http.patch(
+                f"https://api.privy.io/v1/wallets/{wallet_id}",
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "privy-app-id": app_id,
+                    "Content-Type": "application/json",
+                },
+                json={"policy_ids": [policy_id]},
+            )
+            if res.status_code >= 400:
+                detail = res.text[:240] or res.reason_phrase or "unknown error"
+                logger.warning(
+                    "Privy wallet policy attach failed (%s) for %s: %s",
+                    res.status_code,
+                    wallet_id[:8],
+                    detail,
+                )
+                return False, detail
+            return True, "attached"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Privy wallet policy attach failed for %s: %s", wallet_id[:8], exc)
+        return False, str(exc)
+
+
+def _ensure_sui_wallet_policy(wallet_id: str) -> dict[str, Any]:
+    """Attach PRIVY_SUI_POLICY_ID to wallet so raw_sign allows SplitCoins + TransferObjects."""
+    policy_id = (settings.privy_sui_policy_id or "").strip()
+    if not policy_id:
+        return {"configured": False, "attached": False, "detail": "PRIVY_SUI_POLICY_ID not set on API"}
+    if not wallet_id:
+        return {"configured": True, "attached": False, "detail": "missing wallet id"}
+
+    ok, detail = _attach_sui_wallet_policy(wallet_id, policy_id)
+    return {"configured": True, "attached": ok, "policy_id": policy_id, "detail": detail}
+
+
+def ensure_privy_sui_wallet_policy(privy_did: str, sui_address: str) -> dict[str, Any]:
+    wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
+    if not wallet:
+        raise ValueError(
+            "No Privy Sui wallet found. Sign in with Google, Apple, or email on the Sui panel, then retry."
+        )
+    status = _ensure_sui_wallet_policy(wallet["id"])
+    return {"wallet_id": wallet["id"], "address": wallet["address"], **status}
+
+
 def _raw_sign_sui_intent(wallet_id: str, intent_message: bytes) -> bytes:
     if not is_privy_configured():
         raise RuntimeError("Privy is not configured on the API server.")
+
+    _ensure_sui_wallet_policy(wallet_id)
 
     app_id = (settings.privy_app_id or "").strip()
     secret = (settings.privy_app_secret or "").strip()
@@ -187,7 +245,14 @@ def _raw_sign_sui_intent(wallet_id: str, intent_message: bytes) -> bytes:
             },
         )
         if res.status_code >= 400:
-            raise ValueError(f"Privy raw_sign failed ({res.status_code}): {res.text[:240]}")
+            detail = res.text[:240] or res.reason_phrase or "unknown error"
+            if res.status_code == 400 and "policy" in detail.lower():
+                raise ValueError(
+                    "Privy blocked this Sui payment (policy). In Dashboard → Wallets, attach your Sui "
+                    "ALLOW policy (SplitCoins + TransferObjects + MergeCoins) to this embedded wallet, "
+                    "or set PRIVY_SUI_POLICY_ID on the API and redeploy."
+                )
+            raise ValueError(f"Privy raw_sign failed ({res.status_code}): {detail}")
         data = res.json()
 
     signature = data.get("signature")

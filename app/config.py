@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     # Privy — social login (Google/Apple/email) + embedded Sui wallets. https://www.privy.io/
     privy_app_id: str = ""
     privy_app_secret: str = ""
+    # Optional: auto-attach Sui policy (SplitCoins + TransferObjects) before raw_sign
+    privy_sui_policy_id: str = ""
 
     # Payment gateway (Uganda): mtn_momo | pesapal | flutterwave | mock
     payment_gateway_provider: str = "mtn_momo"

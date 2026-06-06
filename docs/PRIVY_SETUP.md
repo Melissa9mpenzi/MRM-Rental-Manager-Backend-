@@ -43,6 +43,8 @@ VITE_SUI_NETWORK=testnet
 ```env
 PRIVY_APP_ID=your-privy-app-id
 PRIVY_APP_SECRET=your-privy-app-secret
+# Optional — policy ID from Dashboard → Policies (auto-attached before pay)
+PRIVY_SUI_POLICY_ID=
 ```
 
 Install API dependency:
@@ -87,3 +89,62 @@ POST /api/v1/auth/privy
 ---
 
 See also: `docs/HACKATHON_SUI_WALRUS.md`, `docs/SUI_PAYMENTS.md`.
+
+---
+
+## 6. Sui wallet policies (required for Pay rent)
+
+Rent payments use Privy **`raw_sign`** on a Sui transaction with **`SplitCoins`** (take rent from gas coin) and **`TransferObjects`** (send to treasury). Privy’s policy engine evaluates every `raw_sign` as method **`signTransactionBytes`**. If no rule allows those commands, signing fails with *“Privy blocked this Sui payment”*.
+
+### Create the policy (Dashboard)
+
+1. [dashboard.privy.io](https://dashboard.privy.io/) → your app → **Controls** → **Policies** → **Create policy**.
+2. **Chain type:** `Sui`.
+3. Add an **ALLOW** rule:
+   - **Method:** `signTransactionBytes`
+   - **Field source:** `sui_transaction_command`
+   - **Field:** `commandName`
+   - **Operator:** `in`
+   - **Values:** `SplitCoins`, `TransferObjects`, `MergeCoins`
+4. Save and copy the **Policy ID** (24-character string).
+
+Example JSON (if importing via API):
+
+```json
+{
+  "version": "1.0",
+  "name": "RentDirect Sui rent pay",
+  "chain_type": "sui",
+  "rules": [
+    {
+      "name": "Allow rent transfer commands",
+      "method": "signTransactionBytes",
+      "conditions": [
+        {
+          "field_source": "sui_transaction_command",
+          "field": "commandName",
+          "operator": "in",
+          "value": ["TransferObjects", "SplitCoins", "MergeCoins"]
+        }
+      ],
+      "action": "ALLOW"
+    }
+  ]
+}
+```
+
+Docs: [Privy Sui policy examples](https://docs.privy.io/controls/policies/example-policies/sui).
+
+### Attach the policy to wallets
+
+Creating a policy alone is not enough — each **embedded Sui wallet** must have it assigned:
+
+1. **Dashboard → Wallets** → filter **Sui** → open the wallet → **Policies** → attach your policy, **or**
+2. **Embedded wallets** settings → set a **default policy** for new Sui wallets (then reconnect so a new wallet is created), **or**
+3. Set on the API (optional): `PRIVY_SUI_POLICY_ID=<policy-id>` on Vercel — the backend attaches it before signing.
+
+Wallets created **before** the policy existed will keep failing until you attach the policy or disconnect and create a fresh Sui wallet after a default policy is set.
+
+### Optional: cap transfers to your treasury only
+
+Add a second ALLOW rule with **Field source** `sui_transfer_objects_command`, **Field** `recipient`, **Operator** `eq`, **Value** = your `SUI_TREASURY_ADDRESS` (from Vercel backend env).
