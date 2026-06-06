@@ -10,6 +10,7 @@ from app.dependencies import get_current_user, require_landlord, require_roles, 
 from app.models.user import User, UserRole
 from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentUpdate, PaymentOut
+from app.schemas.blockchain import PrivyPaySuiBody
 from app.schemas.payment_gateway import InitiateCheckoutBody
 from app.services import payment_service, payment_gateway_service
 from app.services.media_storage_service import save_media
@@ -124,6 +125,20 @@ def simulate_checkout(
     """Disabled unless PAYMENT_ALLOW_MOCK=true (local dev only)."""
     data = payment_gateway_service.simulate_checkout(db, reference, current_user)
     return success_response(data=data, message="Payment simulated and recorded")
+
+
+@router.post("/payments/checkout/{reference}/pay-privy-sui")
+def pay_privy_sui(
+    reference: str,
+    body: PrivyPaySuiBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_tenant),
+):
+    """Pay rent with Privy embedded Sui wallet (server signs via Privy API — no pysui)."""
+    data = payment_gateway_service.pay_privy_sui_checkout(
+        db, current_user, reference, body.access_token
+    )
+    return success_response(data=data, message="Sui payment submitted via Privy wallet.")
 
 
 @router.post("/payments/webhooks/mtn-momo")
