@@ -551,6 +551,81 @@ def pay_privy_sui_checkout(db: Session, user: User, reference: str, access_token
     )
 
 
+def submit_privy_sui_checkout(
+    db: Session,
+    user: User,
+    reference: str,
+    *,
+    access_token: str,
+    sui_address: str,
+    transaction_block: str,
+    signature: str,
+    wallet_id: Optional[str] = None,
+) -> dict:
+    """Browser signs via Privy; API loads public key and submits to Sui (no client pubkey)."""
+    from app.services import privy_sui_transfer, privy_token_service
+    from app.services.blockchain import blockchain_service
+    from app.services.privy_token_service import is_privy_configured, verify_access_token
+
+    if not is_privy_configured():
+        raise error_response(
+            "Privy is not configured on the API. Set PRIVY_APP_ID and PRIVY_APP_SECRET on Vercel.",
+            status_code=503,
+        )
+
+    claims = verify_access_token((access_token or "").strip())
+    if not claims:
+        raise error_response(
+            "Privy session expired or invalid. Tap Pay again after signing in with Google / Apple / email.",
+            status_code=401,
+        )
+
+    privy_did = str(claims.get("user_id") or "").strip()
+    if not privy_did:
+        raise error_response("Invalid Privy token.", status_code=400)
+
+    if not user.privy_did:
+        user.privy_did = privy_did[:128]
+        db.commit()
+
+    if sui_address:
+        blockchain_service.link_privy_wallet(db, user, sui_address.strip())
+
+    checkout = db.query(PaymentCheckout).filter(PaymentCheckout.reference == reference).first()
+    if not checkout:
+        raise error_response("Checkout not found.", status_code=404)
+    if checkout.provider != "sui":
+        raise error_response("Not a Sui checkout.", status_code=400)
+    if checkout.status == CheckoutStatus.completed:
+        return get_checkout(db, user, reference)
+
+    tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
+    if not tenant or checkout.tenant_id != tenant.id:
+        raise error_response("Access denied.", status_code=403)
+
+    try:
+        digest, sender = privy_sui_transfer.submit_browser_signed_privy_tx(
+            privy_did,
+            sui_address,
+            wallet_id=wallet_id,
+            transaction_block_b64=transaction_block,
+            signature_hex=signature,
+        )
+    except ValueError as exc:
+        raise error_response(str(exc), status_code=400) from exc
+    except Exception as exc:
+        logger.exception("Privy Sui submit failed for %s", reference)
+        raise error_response(f"Sui submit failed: {exc}", status_code=502) from exc
+
+    return confirm_sui_checkout(
+        db,
+        user,
+        reference,
+        tx_digest=digest,
+        wallet_address=sender,
+    )
+
+
 def confirm_sui_checkout(
     db: Session,
     user: User,

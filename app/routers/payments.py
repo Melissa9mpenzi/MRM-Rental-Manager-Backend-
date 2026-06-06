@@ -10,7 +10,7 @@ from app.dependencies import get_current_user, require_landlord, require_roles, 
 from app.models.user import User, UserRole
 from app.models.payment import Payment
 from app.schemas.payment import PaymentCreate, PaymentUpdate, PaymentOut
-from app.schemas.blockchain import PrivyPaySuiBody
+from app.schemas.blockchain import PrivyPaySuiBody, SubmitPrivySuiBody
 from app.schemas.payment_gateway import InitiateCheckoutBody
 from app.services import payment_service, payment_gateway_service
 from app.services.media_storage_service import save_media
@@ -139,6 +139,27 @@ def pay_privy_sui(
         db, current_user, reference, body.access_token
     )
     return success_response(data=data, message="Sui payment submitted via Privy wallet.")
+
+
+@router.post("/payments/checkout/{reference}/submit-privy-sui")
+def submit_privy_sui(
+    reference: str,
+    body: SubmitPrivySuiBody,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_tenant),
+):
+    """Browser Privy sign + server submits tx (public key resolved on API — no client pubkey)."""
+    data = payment_gateway_service.submit_privy_sui_checkout(
+        db,
+        current_user,
+        reference,
+        access_token=body.access_token,
+        sui_address=body.sui_address,
+        transaction_block=body.transaction_block,
+        signature=body.signature,
+        wallet_id=body.wallet_id,
+    )
+    return success_response(data=data, message="Sui payment verified and recorded.")
 
 
 @router.post("/payments/webhooks/mtn-momo")

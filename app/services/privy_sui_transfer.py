@@ -337,6 +337,39 @@ def _raw_sign_sui_intent(wallet_id: str, intent_message: bytes) -> bytes:
     return _decode_signature(signature)
 
 
+def submit_browser_signed_privy_tx(
+    privy_did: str,
+    sui_address: str,
+    *,
+    wallet_id: Optional[str],
+    transaction_block_b64: str,
+    signature_hex: str,
+) -> tuple[str, str]:
+    """Submit a browser-signed Privy Sui tx — server loads public key via app secret."""
+    wallet: Optional[dict[str, str]] = None
+    if wallet_id:
+        wallet = {
+            "id": str(wallet_id).strip(),
+            "address": (sui_address or "").strip(),
+            "public_key": "",
+        }
+    if not wallet or not wallet.get("id"):
+        wallet = find_privy_sui_wallet_by_address(privy_did, sui_address) or find_privy_sui_wallet(privy_did)
+    if not wallet:
+        raise ValueError(
+            "No Privy Sui wallet found. Sign in with Google, Apple, or email on the Sui panel, then retry."
+        )
+
+    pub_key_bytes = _decode_public_key(wallet.get("public_key", ""), wallet_id=wallet.get("id"))
+    sig_bytes = _decode_signature(signature_hex)
+    signature_b64 = _serialize_sui_signature(sig_bytes, pub_key_bytes)
+    tx_b64 = (transaction_block_b64 or "").strip()
+    if not tx_b64:
+        raise ValueError("Missing Sui transaction bytes.")
+    digest = _execute_signed_tx(tx_b64, signature_b64)
+    return digest, wallet.get("address") or sui_address
+
+
 def transfer_via_privy_wallet(
     wallet: dict[str, str],
     *,
