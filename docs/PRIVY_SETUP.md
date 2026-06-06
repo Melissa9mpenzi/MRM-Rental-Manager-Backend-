@@ -12,7 +12,20 @@ RentDirect uses **[Privy](https://www.privy.io/)** (recommended) for Gmail, Appl
 2. **Login methods:** enable Google, Apple, Email.
 3. **Embedded wallets → Extended chains:** enable **Sui** (testnet for hackathon).
 4. **Allowed domains:** `http://localhost:5173`, your Vercel frontend URL.
-5. Copy **App ID** and **App Secret**.
+5. **Configuration → UI components → Branding** (improves OTP emails + login modal):
+   - **Name:** `RentDirect` (shown in emails and Privy UI)
+   - **Logo:** hosted PNG, 180×90px recommended — e.g.  
+     `https://mrm-rental-manager-frontend-pink.vercel.app/rentdirect-logo.png`
+   - **Brand color:** `#00C076` (matches RentDirect green theme)
+6. Copy **App ID** and **App Secret**.
+
+Optional frontend override:
+
+```env
+VITE_PRIVY_LOGO_URL=https://your-cdn.com/rentdirect-logo.png
+```
+
+> **Note:** Privy sends the OTP email. Full custom HTML templates require Privy Enterprise; branding (logo + color + name) is configured in the dashboard above. The app also includes a **whitelabel email OTP form** on login and pay pages so users enter the code inside RentDirect instead of a generic Privy popup.
 
 ---
 

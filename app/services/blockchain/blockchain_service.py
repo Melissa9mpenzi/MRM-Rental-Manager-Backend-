@@ -20,6 +20,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.services.blockchain import sui_rpc, walrus_anchor_service, walrus_service, wallet_provision
 from app.services.blockchain.wallet_provision import effective_sui_treasury_address
+from app.services import privy_token_service
 from app.utils.response import error_response
 
 
@@ -41,8 +42,10 @@ def blockchain_public_status() -> dict[str, Any]:
         "walrus_configured": walrus_service.is_walrus_configured(),
         "ugx_per_sui": float(settings.sui_ugx_per_sui or 6_000_000),
         "platform_wallets": True,
+        "privy_configured": privy_token_service.is_privy_configured(),
         "wallet_hint":
-            "Sui address is provisioned with your email account; connect an external wallet only if you want self-custody signing.",
+            "Pay with your Privy embedded Sui wallet (Google / Apple / email login). "
+            "Use an external browser wallet only for self-custody.",
         "supports": {
             "wallet_payments": is_sui_configured(),
             "platform_wallet_checkout": is_sui_configured(),
@@ -136,7 +139,32 @@ def link_wallet(
             )
         )
     db.commit()
+    if wallet_source == "privy":
+        wallet_provision.request_testnet_gas(addr)
     return get_primary_wallet(db, user)
+
+
+def request_faucet_for_address(db: Session, user: User, sui_address: str) -> dict:
+    """Request testnet gas for a wallet the user owns (e.g. Privy embedded address)."""
+    addr = (sui_address or "").strip()
+    if not addr.startswith("0x") or len(addr) < 10:
+        raise error_response("Invalid Sui address.", status_code=400)
+
+    owned = {
+        (row.sui_address or "").lower()
+        for row in db.query(BlockchainWallet).filter(BlockchainWallet.user_id == user.id).all()
+    }
+    if addr.lower() not in owned:
+        link_wallet(db, user, addr, wallet_name="Privy Wallet", wallet_source="privy")
+        requested = True
+    else:
+        requested = wallet_provision.request_testnet_gas(addr)
+    return {
+        "requested": requested,
+        "address": addr,
+        "network": (settings.sui_network or "testnet").lower(),
+        "hint": "Wait 30–60 seconds for testnet SUI to arrive, then pay again.",
+    }
 
 
 def get_primary_wallet(db: Session, user: User) -> dict:

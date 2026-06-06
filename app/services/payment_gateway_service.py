@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 import secrets
 import uuid
@@ -15,19 +16,17 @@ from app.models.tenant import Tenant
 from app.models.user import User, UserRole
 from app.schemas.payment_gateway import CheckoutNextAction, CheckoutOut, InitiateCheckoutBody
 from app.services import payment_service
-from app.services.gateway import get_gateway_provider
+from app.services.gateway import get_gateway_provider_for_method
 from app.services.gateway.config import (
-    active_provider_name,
     assert_live_gateway_ready,
     gateway_public_status,
     is_mock_allowed,
 )
-from app.services.gateway.flutterwave_provider import FlutterwaveGatewayProvider
-from app.services.gateway.mtn_momo_provider import MtnMomoGatewayProvider
-from app.services.gateway.pesapal_provider import PesapalGatewayProvider
 from app.services.gateway.sui_provider import SuiGatewayProvider
 from app.services.blockchain import blockchain_service, sui_rpc
 from app.utils.response import error_response
+
+logger = logging.getLogger(__name__)
 
 MOMO_METHODS = ("mtn_momo", "mtn", "mobile_money", "airtel")
 
@@ -121,19 +120,22 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
     else:
         assert_live_gateway_ready()
 
-    gw_name = "sui" if use_sui else active_provider_name()
+    reference = f"rd_{uuid.uuid4().hex[:24]}"
+    provider = SuiGatewayProvider() if use_sui else get_gateway_provider_for_method(method)
 
-    if gw_name == "mtn_momo" and method == "airtel":
+    if method == "airtel" and provider.name != "pesapal":
         raise error_response(
-            "Airtel Money requires Pesapal. Set PAYMENT_GATEWAY_PROVIDER=pesapal in API .env, "
+            "Airtel Money requires Pesapal. Set PAYMENT_GATEWAY_PROVIDER=pesapal and add Pesapal keys, "
             "or pay with MTN MoMo.",
             status_code=400,
         )
-    if gw_name == "mtn_momo" and method not in ("mtn_momo", "mtn", "mobile_money"):
-        raise error_response("This server uses MTN MoMo API for MTN only. Use Pesapal for Airtel/card.", status_code=400)
+    if method in ("pesapal", "card", "visa", "mastercard") and provider.name != "pesapal":
+        raise error_response(
+            "Card / Pesapal checkout needs PESAPAL_CONSUMER_KEY and PESAPAL_CONSUMER_SECRET on the API server.",
+            status_code=400,
+        )
 
-    reference = f"rd_{uuid.uuid4().hex[:24]}"
-    provider = SuiGatewayProvider() if use_sui else get_gateway_provider()
+    brand = (settings.email_brand_name or "RentDirect UG").strip()
     redirect_url = (
         f"{settings.frontend_base_url.rstrip('/')}/tenant/pay?checkout={reference}&status=return"
     )
@@ -167,7 +169,7 @@ def initiate_checkout(db: Session, user: User, body: InitiateCheckoutBody) -> di
             payment_method=method,
             phone=phone,
             email=checkout.payer_email,
-            title=f"Rent {invoice.invoice_number}",
+            title=f"{brand} — Rent {invoice.invoice_number}",
             redirect_url=redirect_url,
         )
     except ValueError as exc:
@@ -412,18 +414,133 @@ def execute_platform_sui_checkout(db: Session, user: User, reference: str) -> di
     if not sender:
         raise error_response("Could not provision platform wallet.", status_code=500)
 
+    digest = None
+    sender_used = sender
+
+    if user.privy_did:
+        from app.services import privy_sui_transfer
+        from app.services.privy_token_service import is_privy_configured
+
+        if is_privy_configured():
+            try:
+                digest, sender_used = privy_sui_transfer.transfer_via_privy(
+                    user,
+                    recipient=treasury,
+                    amount_mist=amount_mist,
+                )
+            except (ValueError, RuntimeError) as exc:
+                logger.warning("Privy Sui checkout failed for user %s: %s", user.id, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Privy Sui transfer error for user %s: %s", user.id, exc)
+
+    if not digest:
+        if is_privy_configured():
+            raise error_response(
+                "Sui server signing needs a Privy session. On Pay rent, connect with Google / Apple / email "
+                "(Privy), or use MTN MoMo / Pesapal instead of the legacy platform wallet.",
+                status_code=503,
+            )
+        try:
+            digest = wallet_provision.execute_sui_transfer(
+                user.id,
+                recipient=treasury,
+                amount_mist=amount_mist,
+            )
+            sender_used = sender
+        except RuntimeError as exc:
+            raise error_response(str(exc), status_code=503) from exc
+        except ValueError as exc:
+            raise error_response(str(exc), status_code=400) from exc
+        except Exception as exc:
+            raise error_response(f"Sui payment failed: {exc}", status_code=502) from exc
+
+    return confirm_sui_checkout(
+        db,
+        user,
+        reference,
+        tx_digest=digest,
+        wallet_address=sender_used,
+    )
+
+
+def pay_privy_sui_checkout(db: Session, user: User, reference: str, access_token: str) -> dict:
+    """
+    Pay Sui rent using Privy embedded wallet — server signs via Privy raw_sign API.
+    Requires a fresh Privy access token from the browser (getAccessToken).
+    """
+    from app.services import privy_sui_transfer, privy_token_service
+    from app.services.blockchain import blockchain_service
+    from app.services.privy_token_service import is_privy_configured, verify_access_token
+
+    if not is_privy_configured():
+        raise error_response(
+            "Privy is not configured on the API. Set PRIVY_APP_ID and PRIVY_APP_SECRET on Vercel.",
+            status_code=503,
+        )
+
+    claims = verify_access_token((access_token or "").strip())
+    if not claims:
+        raise error_response(
+            "Privy session expired or invalid. Tap Pay again after signing in with Google / Apple / email.",
+            status_code=401,
+        )
+
+    privy_did = str(claims.get("user_id") or "").strip()
+    if not privy_did:
+        raise error_response("Invalid Privy token.", status_code=400)
+
+    if not user.privy_did:
+        user.privy_did = privy_did[:128]
+        db.commit()
+
+    privy_user = privy_token_service.fetch_privy_user(privy_did)
+    profile = (
+        privy_token_service.extract_profile_from_privy_user(privy_user) if privy_user else {}
+    )
+    sui_address = profile.get("sui_address")
+    if sui_address:
+        blockchain_service.link_privy_wallet(db, user, sui_address)
+
+    checkout = db.query(PaymentCheckout).filter(PaymentCheckout.reference == reference).first()
+    if not checkout:
+        raise error_response("Checkout not found.", status_code=404)
+    if checkout.provider != "sui":
+        raise error_response("Not a Sui checkout.", status_code=400)
+    if checkout.status == CheckoutStatus.completed:
+        return get_checkout(db, user, reference)
+
+    tenant = db.query(Tenant).filter(Tenant.user_id == user.id).first()
+    if not tenant or checkout.tenant_id != tenant.id:
+        raise error_response("Access denied.", status_code=403)
+
     try:
-        digest = wallet_provision.execute_sui_transfer(
-            user.id,
+        payload = json.loads(checkout.provider_payload or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    init_raw = payload if isinstance(payload, dict) else {}
+    if "amount_mist" not in init_raw and "raw" in init_raw:
+        init_raw = init_raw.get("raw") or {}
+
+    amount_mist = int(
+        init_raw.get("amount_mist") or sui_rpc.ugx_to_mist(Decimal(str(checkout.amount)))
+    )
+    from app.services.blockchain.wallet_provision import effective_sui_treasury_address
+
+    treasury = (init_raw.get("treasury_address") or effective_sui_treasury_address() or "").strip()
+    if not treasury:
+        raise error_response("Sui treasury not configured on API.", status_code=503)
+
+    try:
+        digest, sender = privy_sui_transfer.transfer_for_privy_did(
+            privy_did,
             recipient=treasury,
             amount_mist=amount_mist,
         )
-    except RuntimeError as exc:
-        raise error_response(str(exc), status_code=503) from exc
     except ValueError as exc:
         raise error_response(str(exc), status_code=400) from exc
     except Exception as exc:
-        raise error_response(f"Sui payment failed: {exc}", status_code=502) from exc
+        logger.exception("Privy Sui pay failed for %s", reference)
+        raise error_response(f"Privy Sui payment failed: {exc}", status_code=502) from exc
 
     return confirm_sui_checkout(
         db,

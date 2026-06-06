@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     payment_allow_mock: bool = False
     payment_webhook_secret: str = ""
 
+    # Platform fees (landlord balance ledger) — see docs/PLATFORM_FEES.md
+    platform_rent_fee_percent: float = 1.5
+    platform_rent_fee_flat_ugx: float = 0
+    platform_rent_fee_min_ugx: float = 500
+    platform_unit_fee_monthly_ugx: float = 8000
+
     # MTN MoMo Collection API — https://momodeveloper.mtn.com (UG MTN)
     mtn_momo_subscription_key: str = ""
     mtn_momo_api_user: str = ""

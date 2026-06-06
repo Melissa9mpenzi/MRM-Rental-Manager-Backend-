@@ -292,6 +292,9 @@ def ensure_payments_column_migrations() -> None:
         ),
         ("period_month", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1", "INTEGER NOT NULL DEFAULT 1"),
         ("period_year", "INTEGER NOT NULL DEFAULT 2025", "INTEGER NOT NULL DEFAULT 2025", "INTEGER NOT NULL DEFAULT 2025"),
+        ("gross_amount", "NUMERIC(12,2) NULL", "NUMERIC(12,2) NULL", "NUMERIC(12,2) NULL"),
+        ("platform_fee", "NUMERIC(12,2) NULL", "NUMERIC(12,2) NULL", "NUMERIC(12,2) NULL"),
+        ("net_to_landlord", "NUMERIC(12,2) NULL", "NUMERIC(12,2) NULL", "NUMERIC(12,2) NULL"),
     ]
     for col_name, ddl_pg, ddl_sqlite, ddl_other in _payment_column_ddls:
         add_column(col_name, ddl_pg, ddl_sqlite, ddl_other)
@@ -707,6 +710,16 @@ def ensure_platform_ops_tables() -> None:
             logger.warning("ensure_platform_ops_tables (%s): %s", model.__tablename__, exc)
 
 
+def ensure_landlord_ledger_table() -> None:
+    from app.models.landlord_ledger import LandlordLedgerEntry
+
+    try:
+        LandlordLedgerEntry.__table__.create(bind=engine, checkfirst=True)
+        logger.info("Ensured landlord_ledger_entries table")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_landlord_ledger_table: %s", exc)
+
+
 def run_incremental_migrations() -> None:
     """ALTER existing DBs — safe to run repeatedly."""
     ensure_users_column_migrations()
@@ -724,6 +737,7 @@ def run_incremental_migrations() -> None:
     ensure_walrus_anchor_migrations()
     ensure_government_invitation_tables()
     ensure_platform_ops_tables()
+    ensure_landlord_ledger_table()
 
 
 def _startup_stamp_path() -> Path:

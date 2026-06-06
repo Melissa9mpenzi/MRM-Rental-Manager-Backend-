@@ -19,5 +19,7 @@ cloudinary
 # Platform Sui wallet signing (pin betterproto2 — pysui breaks on 0.10.x)
 betterproto2==0.9.1
 pysui>=0.76.0,<0.90.0
-# Privy social auth + embedded wallets (Google / Apple / email)
+# Privy social auth + embedded Sui wallets (Google / Apple / email)
+privy-client>=0.1.0
+base58>=2.1.0
 pyotp>=2.9.0

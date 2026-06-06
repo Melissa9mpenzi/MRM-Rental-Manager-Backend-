@@ -155,13 +155,25 @@ def settle_invoice_payment(
         raise HTTPException(400, f"Payment amount exceeds balance due ({invoice.balance_due})")
 
     method_enum = parse_payment_method(payment_method)
+    gross = Decimal(str(amount))
+    from app.services import platform_fee_service
+
+    fee = (
+        platform_fee_service.calculate_online_rent_fee(gross)
+        if platform_fee_service.is_online_payment_method(method_enum)
+        else Decimal("0")
+    )
+    net = gross - fee
 
     payment = Payment(
         tenant_id=invoice.tenant_id,
         lease_id=invoice.lease_id,
         unit_id=invoice.unit_id,
         owner_id=invoice.owner_id,
-        amount=amount,
+        amount=gross,
+        gross_amount=gross,
+        platform_fee=fee,
+        net_to_landlord=net,
         payment_type=PaymentType.rent,
         payment_method=method_enum,
         reference=reference,
@@ -184,15 +196,28 @@ def settle_invoice_payment(
     db.flush()
 
     try:
+        platform_fee_service.record_online_rent_settlement(
+            db,
+            owner_id=invoice.owner_id,
+            payment_id=payment.id,
+            gross_ugx=gross,
+            payment_method=method_enum.value,
+            reference=reference,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("landlord ledger settlement skipped: %s", exc)
+
+    try:
         from app.models.notification import Notification, NotifType
 
         tenant = db.query(Tenant).filter(Tenant.id == invoice.tenant_id).first()
+        fee_note = f" (platform fee UGX {float(fee):,.0f}, net UGX {float(net):,.0f})" if fee > 0 else ""
         note = Notification(
             user_id=invoice.owner_id,
             title="Payment received",
             message=(
-                f"{tenant.full_name if tenant else 'Tenant'} paid UGX {float(amount):,.0f} "
-                f"for {MONTHS[invoice.period_month - 1]} {invoice.period_year} (online)."
+                f"{tenant.full_name if tenant else 'Tenant'} paid UGX {float(gross):,.0f} "
+                f"for {MONTHS[invoice.period_month - 1]} {invoice.period_year} (online).{fee_note}"
             ),
             notif_type=NotifType.payment_received,
             link=f"/landlord/tenants/{invoice.tenant_id}",
@@ -376,6 +401,19 @@ def wallet_summary_for_user(db: Session, user: User) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("wallet_summary escrow query skipped: %s", exc)
         escrow_held = sum(_safe_float(h.amount_ugx) for h in active_escrow)
+        try:
+            from app.services import platform_fee_service
+
+            balance = platform_fee_service.landlord_balance_summary(db, user.id)
+            payload["landlord_balance"] = {
+                "available_balance_ugx": balance["available_balance_ugx"],
+                "lifetime_platform_fees_ugx": balance["lifetime_platform_fees_ugx"],
+                "estimated_monthly_unit_fees_ugx": balance["estimated_monthly_unit_fees_ugx"],
+                "active_units": balance["active_units"],
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("wallet_summary landlord_balance skipped: %s", exc)
+
         payload.update(
             {
                 "available_ugx": round(total, 2),

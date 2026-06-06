@@ -35,8 +35,7 @@ def _sign_transaction(tx_bytes_b64: str, sk: Ed25519PrivateKey) -> str:
         from pysui.sui.sui_crypto import SignatureScheme, SuiKeyPair
     except ImportError as exc:
         raise RuntimeError(
-            "Sui signing library (pysui) is not available on the API server. "
-            "Use MoMo/Pesapal or pay with an external Sui wallet."
+            "Sui signing unavailable. Sign in with Privy (Google / Apple / email) or use an external Sui wallet."
         ) from exc
 
     seed, pk = _key_material(sk)
