@@ -55,6 +55,7 @@ def blockchain_public_status() -> dict[str, Any]:
             "walrus_publisher_live": walrus_service.is_walrus_configured(),
             "kyc_manifests": True,
             "property_packets": True,
+            "property_listing_identity": True,
             "gov_audit_blobs": True,
         },
     }

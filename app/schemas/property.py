@@ -116,6 +116,13 @@ class PropertyOut(BaseModel):
     video_path:            Optional[str] = None
     is_active:             bool
     gov_verification_status: str = "pending"
+    sui_identity_hash: Optional[str] = None
+    sui_identity_object_id: Optional[str] = None
+    sui_identity_tx_digest: Optional[str] = None
+    sui_listed_at_ms: Optional[int] = None
+    sui_identity_status: Optional[str] = None
+    sui_identity_explorer_url: Optional[str] = None
+    sui_identity_verify_url: Optional[str] = None
     total_units:           int
     occupied_units:        int
     vacant_units:          int
@@ -138,6 +145,8 @@ class PropertySummary(BaseModel):
     video_path:            Optional[str] = None
     is_active:             bool
     gov_verification_status: str = "pending"
+    sui_identity_status: Optional[str] = None
+    sui_identity_object_id: Optional[str] = None
     total_units:           int
     occupied_units:        int
     vacant_units:          int

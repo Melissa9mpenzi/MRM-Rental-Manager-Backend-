@@ -43,6 +43,10 @@ class Property(Base):
     gov_walrus_blob_id = Column(String(256), nullable=True)
     gov_packet_hash = Column(String(64), nullable=True)
     verification_token = Column(String(64), unique=True, nullable=True, index=True)
+    sui_identity_hash = Column(String(64), nullable=True, index=True)
+    sui_identity_object_id = Column(String(128), nullable=True, index=True)
+    sui_identity_tx_digest = Column(String(128), nullable=True, index=True)
+    sui_listed_at_ms = Column(Integer, nullable=True)
     created_at  = Column(DateTime, default=func.now(), server_default=func.now())
     updated_at  = Column(DateTime, default=func.now(), server_default=func.now(), onupdate=func.now())
 

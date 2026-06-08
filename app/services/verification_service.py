@@ -259,20 +259,37 @@ def verify_property(db: Session, token: str) -> dict[str, Any]:
     checks["contract_valid"] = gov == "verified"
     walrus = _walrus_block(prop.gov_walrus_blob_id, content_hash=prop.gov_packet_hash)
     checks["walrus_proof"] = bool(walrus.get("content_hash") or walrus.get("walrus_live"))
-    checks["hash_integrity"] = bool(prop.gov_packet_hash)
+    checks["hash_integrity"] = bool(prop.gov_packet_hash) or bool(getattr(prop, "sui_identity_hash", None))
     checks["not_tampered"] = checks["hash_integrity"]
 
-    valid = checks["record_exists"] and gov == "verified"
+    chain_ok = _verify_chain_tx(getattr(prop, "sui_identity_tx_digest", None))
+    checks["chain_confirmed"] = chain_ok if getattr(prop, "sui_identity_tx_digest", None) else False
+
+    valid = checks["record_exists"] and (
+        gov == "verified" or bool(getattr(prop, "sui_identity_hash", None))
+    )
+
+    from app.services.blockchain import property_identity_service
+
+    identity = property_identity_service.identity_public_fields(prop)
 
     return {
         "valid": valid,
         "kind": "property",
         "verification_status": "verified" if valid else ("pending" if gov == "pending" else "failed_checks"),
         "title": "Property Verified" if valid else "Property verification",
-        "headline": "KCCA-approved listing" if valid else f"Status: {gov.upper()}",
-        "message": "This property is registered and approved by KCCA on RentDirect UG."
-        if valid
-        else f"Government verification status: {gov}.",
+        "headline": "KCCA-approved listing" if gov == "verified" else f"Status: {gov.upper()}",
+        "message": (
+            "This property has an automatic Sui listing identity"
+            + (" and on-chain object." if getattr(prop, "sui_identity_object_id", None) else ".")
+            + f" KCCA status: {gov.upper()}."
+        )
+        if getattr(prop, "sui_identity_hash", None)
+        else (
+            "This property is registered and approved by KCCA on RentDirect UG."
+            if valid
+            else f"Government verification status: {gov}."
+        ),
         "checks": checks,
         "property_name": prop.name,
         "property_address": prop.address,
@@ -281,6 +298,7 @@ def verify_property(db: Session, token: str) -> dict[str, Any]:
         "landlord_name": prop.owner.full_name if prop.owner else None,
         "gov_verification_status": gov,
         "verification_url": verify_page_url(token),
+        **identity,
         **walrus,
         "footer": _footer(),
     }

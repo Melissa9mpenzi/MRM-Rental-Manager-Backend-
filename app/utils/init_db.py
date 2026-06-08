@@ -461,6 +461,35 @@ def ensure_government_schema_migrations() -> None:
         logger.warning("ensure_government_schema_migrations properties video_path: %s", exc)
 
 
+def ensure_property_sui_identity_columns() -> None:
+    """On-chain listing identity fields for property verification NFTs."""
+    from app.config import settings
+
+    insp = inspect(engine)
+    schema = postgres_table_schema if postgres_table_schema else None
+    try:
+        if not insp.has_table("properties", schema=schema):
+            return
+        cols = {c["name"] for c in insp.get_columns("properties", schema=schema)}
+        qual = f'"{schema}"."properties"' if schema else "properties"
+        url = settings.database_url.lower()
+        is_pg = "postgresql" in url
+        for col_name, ddl_pg, ddl_sqlite in (
+            ("sui_identity_hash", "VARCHAR(64) NULL", "VARCHAR(64) NULL"),
+            ("sui_identity_object_id", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
+            ("sui_identity_tx_digest", "VARCHAR(128) NULL", "VARCHAR(128) NULL"),
+            ("sui_listed_at_ms", "BIGINT NULL", "INTEGER NULL"),
+        ):
+            if col_name in cols:
+                continue
+            ddl = ddl_pg if is_pg else ddl_sqlite
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER TABLE {qual} ADD COLUMN {col_name} {ddl}"))
+            logger.info("Added properties.%s", col_name)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("ensure_property_sui_identity_columns: %s", exc)
+
+
 def ensure_verification_token_columns() -> None:
     """QR verification tokens for leases, properties, and NIRA compliance."""
     from app.config import settings
@@ -733,6 +762,7 @@ def run_incremental_migrations() -> None:
     ensure_unit_listing_filter_columns()
     ensure_government_schema_migrations()
     ensure_verification_token_columns()
+    ensure_property_sui_identity_columns()
     ensure_lease_agreement_columns()
     ensure_walrus_anchor_migrations()
     ensure_government_invitation_tables()

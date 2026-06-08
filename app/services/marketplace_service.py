@@ -37,6 +37,9 @@ def _serialize_unit(
     ut = unit.unit_type
     ut_val = ut.value if hasattr(ut, "value") else str(ut)
     amenities = unit.amenities if isinstance(unit.amenities, list) else []
+    from app.services.blockchain import property_identity_service
+
+    identity = property_identity_service.identity_public_fields(prop)
     parking = "On request"
     for a in amenities:
         if isinstance(a, str) and "park" in a.lower():
@@ -66,6 +69,7 @@ def _serialize_unit(
         "listing_category": unit.listing_category,
         "floor_number": unit.floor_number or 0,
         "amenities": amenities,
+        **identity,
     }
 
 

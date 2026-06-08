@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     sui_treasury_address: str = ""
     sui_package_id: str = ""
     sui_escrow_module: str = "escrow"
+    sui_property_module: str = "property_identity"
     sui_ugx_per_sui: float = 6_000_000
     sui_anchor_fiat_receipts: bool = True
 

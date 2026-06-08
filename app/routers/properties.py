@@ -19,11 +19,19 @@ router = APIRouter(tags=["Properties & Units"])
 
 
 def _summary(prop) -> PropertySummary:
-    return PropertySummary.model_validate(prop)
+    from app.services.blockchain import property_identity_service
+
+    data = PropertySummary.model_validate(prop).model_dump()
+    data.update(property_identity_service.identity_public_fields(prop))
+    return PropertySummary(**data)
 
 
 def _detail(prop) -> PropertyOut:
-    return PropertyOut.model_validate(prop)
+    from app.services.blockchain import property_identity_service
+
+    data = PropertyOut.model_validate(prop).model_dump()
+    data.update(property_identity_service.identity_public_fields(prop))
+    return PropertyOut(**data)
 
 
 @router.get("/properties")

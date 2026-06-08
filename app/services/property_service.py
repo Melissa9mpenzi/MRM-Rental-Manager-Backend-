@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, status
 
 from app.models.property import Property, Unit, UnitStatus
+from app.models.user import User
 from app.schemas.property import (
     PropertyCreate, PropertyUpdate,
     UnitCreate, UnitUpdate, UnitStatusUpdate
@@ -26,14 +27,22 @@ def get_all_properties(
         query = query.filter(Property.is_active == True)
     if search:
         query = query.filter(Property.name.ilike(f"%{search}%"))
-    return query.order_by(Property.created_at.desc()).all()
+    props = query.order_by(Property.created_at.desc()).all()
+    for prop in props:
+        try:
+            from app.services.blockchain import property_identity_service
+
+            property_identity_service.ensure_listing_identity_if_missing(db, prop)
+        except Exception:
+            pass
+    return props
 
 
 def get_property(db: Session, property_id: int, owner_id: int) -> Property:
     """Get a single property with all units. Enforces ownership."""
     prop = (
         db.query(Property)
-        .options(joinedload(Property.units))
+        .options(joinedload(Property.units), joinedload(Property.owner))
         .filter(Property.id == property_id, Property.owner_id == owner_id)
         .first()
     )
@@ -42,11 +51,38 @@ def get_property(db: Session, property_id: int, owner_id: int) -> Property:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Property not found."
         )
+    try:
+        from app.services.blockchain import property_identity_service
+
+        property_identity_service.ensure_listing_identity_if_missing(db, prop)
+    except Exception:
+        pass
     return prop
 
 
 def create_property(db: Session, data: PropertyCreate, owner_id: int) -> Property:
     """Create a new property for this landlord."""
+    import logging
+
+    from app.services.blockchain import property_identity_service
+
+    logger = logging.getLogger(__name__)
+
+    fingerprint = property_identity_service.location_fingerprint(
+        address=data.address,
+        parish=data.parish,
+        district=data.district or "Kampala",
+    )
+    duplicate = property_identity_service.find_duplicate_listing(db, fingerprint)
+    if duplicate:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A property listing already exists for this location on RentDirect. "
+                "Each address receives one verifiable Sui listing identity to prevent duplicate listings."
+            ),
+        )
+
     prop = Property(
         owner_id=owner_id,
         name=data.name,
@@ -58,8 +94,20 @@ def create_property(db: Session, data: PropertyCreate, owner_id: int) -> Propert
         gov_verification_status="pending",
     )
     db.add(prop)
+    db.flush()
+
+    owner = db.query(User).filter(User.id == owner_id).first()
+    if owner:
+        try:
+            property_identity_service.anchor_listing_identity(db, prop, owner)
+        except HTTPException:
+            db.rollback()
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Property listing identity anchor failed for property %s: %s", prop.id, exc)
+
     db.commit()
-    db.expire(prop)          # force reload from DB so server_default timestamps are fetched
+    db.expire(prop)
     db.refresh(prop)
     return get_property(db, prop.id, owner_id)
 
