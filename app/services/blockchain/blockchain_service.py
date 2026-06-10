@@ -181,7 +181,9 @@ def get_primary_wallet(db: Session, user: User) -> dict:
             "wallet_source": None,
             "auto_provisioned": False,
         }
-    return {
+    from app.services.blockchain import wallet_reputation_service
+
+    base = {
         "linked": True,
         "sui_address": row.sui_address,
         "wallet_name": row.wallet_name,
@@ -189,6 +191,11 @@ def get_primary_wallet(db: Session, user: User) -> dict:
         "auto_provisioned": (getattr(row, "wallet_source", None) or "platform") in ("platform", "privy"),
         "linked_at": row.linked_at.isoformat() if row.linked_at else None,
     }
+    try:
+        base["reputation"] = wallet_reputation_service.compute_wallet_reputation(db, user)
+    except Exception:
+        base["reputation"] = None
+    return base
 
 
 def _receipt_payload(

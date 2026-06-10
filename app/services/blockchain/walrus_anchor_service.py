@@ -242,12 +242,32 @@ def build_lease_agreement_payload(lease: Lease) -> dict[str, Any]:
     }
 
 
+def _wallet_for_user_id(db: Session, user_id: Optional[int]) -> Optional[str]:
+    if not user_id:
+        return None
+    from app.models.blockchain_wallet import BlockchainWallet
+
+    row = (
+        db.query(BlockchainWallet)
+        .filter(
+            BlockchainWallet.user_id == user_id,
+            BlockchainWallet.is_primary == True,  # noqa: E712
+        )
+        .first()
+    )
+    return (row.sui_address or "").strip() or None if row else None
+
+
 def anchor_lease_agreement(db: Session, lease: Lease) -> dict[str, Any]:
     """Walrus blob (when configured) + SHA-256 agreement hash — verifiable rental agreement."""
     from app.services import verification_service
 
     verification_service.ensure_lease_verify_token(lease)
     payload = build_lease_agreement_payload(lease)
+    tenant_user_id = lease.tenant.user_id if lease.tenant else None
+    payload["landlord_wallet"] = _wallet_for_user_id(db, lease.owner_id)
+    payload["tenant_wallet"] = _wallet_for_user_id(db, tenant_user_id)
+    payload["anchored_at_ms"] = int(datetime.now(timezone.utc).timestamp() * 1000)
     pre_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
     stored = _safe_store_json({**payload, "agreement_hash": pre_hash})
     lease.agreement_hash = stored.content_hash
