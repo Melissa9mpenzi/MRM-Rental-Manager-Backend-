@@ -200,6 +200,39 @@ def _origin_allowed(origin: str | None) -> bool:
     return bool(_CORS_ORIGIN_RE.match(origin))
 
 
+def _operational_error_detail(exc: Exception) -> tuple[str, int]:
+    """Map SQLAlchemy DB errors to actionable API messages."""
+    from sqlalchemy.exc import OperationalError
+
+    op = exc if isinstance(exc, OperationalError) else exc.__cause__
+    if not isinstance(op, OperationalError):
+        return "Internal server error", 500
+
+    raw = str(getattr(op, "orig", None) or op).lower()
+    if "connection refused" in raw or "could not connect" in raw or "connection timed out" in raw:
+        return (
+            "Database unavailable. Start PostgreSQL or set DATABASE_URL in .env "
+            "(copy .env.example). For local dev, restart the API to use SQLite.",
+            503,
+        )
+    if (
+        "no such table" in raw
+        or "no such column" in raw
+        or "does not exist" in raw
+        or "undefinedcolumn" in raw
+        or "undefined table" in raw
+    ):
+        return (
+            "Database schema is missing government portal tables or columns. "
+            "Run: python -m app.utils.init_db — then retry government login.",
+            503,
+        )
+    return (
+        "Database error during this request. Check the API logs or run python -m app.utils.init_db.",
+        503,
+    )
+
+
 class CorsFallbackMiddleware(BaseHTTPMiddleware):
     """Ensure CORS headers on errors/timeouts where default middleware may not run."""
 
@@ -225,21 +258,9 @@ class CorsFallbackMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
         except Exception as exc:  # noqa: BLE001
             logging.getLogger("uvicorn.error").exception("Unhandled error")
-            detail = "Internal server error"
-            status_code = 500
-            try:
-                from sqlalchemy.exc import OperationalError
-
-                if isinstance(exc, OperationalError) or (
-                    exc.__cause__ and isinstance(exc.__cause__, OperationalError)
-                ):
-                    detail = (
-                        "Database unavailable. Start PostgreSQL or set DATABASE_URL in .env "
-                        "(copy .env.example). For local dev, restart the API to use SQLite."
-                    )
-                    status_code = 503
-            except Exception:  # noqa: BLE001
-                pass
+            detail, status_code = _operational_error_detail(exc)
+            if detail == "Internal server error":
+                status_code = 500
             response = JSONResponse(
                 status_code=status_code,
                 content={"success": False, "detail": detail},

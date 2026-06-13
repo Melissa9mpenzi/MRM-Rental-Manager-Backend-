@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -30,6 +31,8 @@ AGENCY_ROLE_MAP = {
 
 GOV_2FA_OTP_MINUTES = 15
 
+logger = logging.getLogger(__name__)
+
 
 def _utc_now_naive() -> datetime:
     """Naive UTC for TIMESTAMP WITHOUT TIME ZONE columns (consistent read/write)."""
@@ -52,11 +55,23 @@ def _otp_expiry_naive(exp: Optional[datetime]) -> Optional[datetime]:
 def issue_and_email_gov_2fa_otp(db: Session, user: User) -> tuple[str, bool]:
     """Generate a 6-digit portal 2FA code, store on user, email to official address."""
     otp = generate_otp()
-    expiry = _utc_now_naive() + timedelta(minutes=GOV_2FA_OTP_MINUTES)
-    user.gov_2fa_otp = otp
-    user.gov_2fa_otp_expiry = expiry
-    db.commit()
-    db.refresh(user)
+    try:
+        expiry = _utc_now_naive() + timedelta(minutes=GOV_2FA_OTP_MINUTES)
+        user.gov_2fa_otp = otp
+        user.gov_2fa_otp_expiry = expiry
+        db.commit()
+        db.refresh(user)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning(
+            "Could not persist government 2FA OTP (run python -m app.utils.init_db): %s",
+            exc,
+        )
+        if settings.environment == "production":
+            raise ValueError(
+                "Government portal database schema is out of date. "
+                "Ask the platform administrator to run database migrations."
+            ) from exc
 
     sent = send_government_2fa_otp(
         to_email=user.email,
@@ -127,17 +142,24 @@ def record_gov_login_attempt(
     user_agent: Optional[str] = None,
     failure_reason: Optional[str] = None,
 ) -> None:
-    db.add(
-        GovLoginSession(
-            email=email,
-            user_id=user_id,
-            success=success,
-            ip_address=ip_address,
-            user_agent=(user_agent or "")[:500] or None,
-            failure_reason=failure_reason,
+    try:
+        db.add(
+            GovLoginSession(
+                email=email,
+                user_id=user_id,
+                success=success,
+                ip_address=ip_address,
+                user_agent=(user_agent or "")[:500] or None,
+                failure_reason=failure_reason,
+            )
         )
-    )
-    db.commit()
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning(
+            "Could not record government login attempt (run python -m app.utils.init_db): %s",
+            exc,
+        )
 
 
 def create_invitation(
@@ -437,15 +459,19 @@ def government_login(
         ip_address=ip_address,
         user_agent=user_agent,
     )
-    log_action(
-        db,
-        user_id=user.id,
-        action="gov_login",
-        table_name="users",
-        record_id=user.id,
-        ip_address=ip_address,
-        new_value={"user_agent": (user_agent or "")[:200]},
-    )
+    try:
+        log_action(
+            db,
+            user_id=user.id,
+            action="gov_login",
+            table_name="users",
+            record_id=user.id,
+            ip_address=ip_address,
+            new_value={"user_agent": (user_agent or "")[:200]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.warning("Could not write gov_login audit entry: %s", exc)
     payload: dict[str, Any] = {
         "access_token": tokens["access_token"],
         "refresh_token": tokens["refresh_token"],
