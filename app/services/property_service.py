@@ -105,6 +105,23 @@ def create_property(db: Session, data: PropertyCreate, owner_id: int) -> Propert
             raise
         except Exception as exc:  # noqa: BLE001
             logger.warning("Property listing identity anchor failed for property %s: %s", prop.id, exc)
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Could not register the Sui listing identity for this property. "
+                    "The listing was not saved — try again in a moment."
+                ),
+            ) from exc
+        if not property_identity_service.has_sui_listing_identity(prop):
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Sui listing identity is required before a property can be listed. "
+                    "Please try again."
+                ),
+            )
 
     db.commit()
     db.expire(prop)

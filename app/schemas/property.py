@@ -123,6 +123,9 @@ class PropertyOut(BaseModel):
     sui_identity_status: Optional[str] = None
     sui_identity_explorer_url: Optional[str] = None
     sui_identity_verify_url: Optional[str] = None
+    sui_listing_verified: Optional[bool] = None
+    marketplace_visible: Optional[bool] = None
+    verification_note: Optional[str] = None
     total_units:           int
     occupied_units:        int
     vacant_units:          int
@@ -147,6 +150,8 @@ class PropertySummary(BaseModel):
     gov_verification_status: str = "pending"
     sui_identity_status: Optional[str] = None
     sui_identity_object_id: Optional[str] = None
+    sui_listing_verified: Optional[bool] = None
+    marketplace_visible: Optional[bool] = None
     total_units:           int
     occupied_units:        int
     vacant_units:          int

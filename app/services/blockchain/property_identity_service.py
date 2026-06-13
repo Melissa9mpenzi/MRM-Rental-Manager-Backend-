@@ -25,6 +25,12 @@ DEMO_LINE = (
     "helping reduce fraud and duplicate listings."
 )
 
+VERIFICATION_NOTE = (
+    "Sui records who listed the property, when, and where — as an immutable object. "
+    "It does not independently confirm the building exists; KCCA officer review covers that. "
+    "Listings only appear on the marketplace after Sui identity registration."
+)
+
 
 def location_fingerprint(*, address: str, parish: Optional[str], district: Optional[str]) -> str:
     parts = [
@@ -43,6 +49,11 @@ def location_label(prop: Property) -> str:
     if prop.district:
         bits.append(prop.district)
     return ", ".join(bits)
+
+
+def has_sui_listing_identity(prop: Property) -> bool:
+    """True when the property has a registered Sui listing identity (required for marketplace)."""
+    return bool((getattr(prop, "sui_identity_hash", None) or "").strip())
 
 
 def find_duplicate_listing(db: Session, fingerprint: str, *, exclude_id: Optional[int] = None) -> Optional[Property]:
@@ -102,10 +113,10 @@ def identity_public_fields(prop: Property) -> dict[str, Any]:
         "sui_identity_explorer_url": _explorer_object_url(getattr(prop, "sui_identity_object_id", None))
         or _explorer_tx_url(getattr(prop, "sui_identity_tx_digest", None)),
         "sui_identity_verify_url": f"{frontend_base_url()}/verify/property/{token}" if token else None,
-        "sui_identity_tagline": (
-            "Every property listing receives a verifiable on-chain identity on Sui, "
-            "alongside KCCA government compliance review."
-        ),
+        "sui_identity_tagline": DEMO_LINE,
+        "sui_listing_verified": has_sui_listing_identity(prop),
+        "marketplace_visible": has_sui_listing_identity(prop),
+        "verification_note": VERIFICATION_NOTE,
     }
 
 

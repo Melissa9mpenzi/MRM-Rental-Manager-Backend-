@@ -7,6 +7,7 @@ from app.models.lease import Lease
 from app.models.payment import Payment, PaymentType
 from app.models.property import Property, Unit
 from app.models.user import User, UserRole
+from app.services.blockchain.property_identity_service import has_sui_listing_identity
 
 
 GOVERNMENT_OFFICER_ROLE_VALUES = frozenset(
@@ -68,7 +69,10 @@ def listing_compliance_badges(
         "nira_verified_landlord": nira,
         "kcca_approved_property": kcca,
         "ura_compliant": ura,
-        "marketplace_live": nira and kcca and bool(prop.is_active),
+        "marketplace_live": (
+            nira and kcca and bool(prop.is_active) and has_sui_listing_identity(prop)
+        ),
+        "sui_listing_verified": has_sui_listing_identity(prop),
     }
 
 
@@ -78,4 +82,5 @@ def compliance_badges_public(badges: dict[str, bool]) -> dict[str, bool]:
         "nira_verified_landlord": bool(badges.get("nira_verified_landlord")),
         "kcca_approved_property": bool(badges.get("kcca_approved_property")),
         "ura_compliant": bool(badges.get("ura_compliant")),
+        "sui_listing_verified": bool(badges.get("sui_listing_verified")),
     }

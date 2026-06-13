@@ -13,6 +13,7 @@ from app.services.compliance_service import compliance_badges_public, listing_co
 from app.utils.schema_compat import table_columns
 
 # Tenants can browse vacant units while KCCA review is pending (badge shows status).
+# Sui listing identity is required — KCCA approval alone is not enough to appear here.
 _MARKETPLACE_GOV_STATUSES = ("verified", "pending")
 
 
@@ -90,6 +91,11 @@ def _marketplace_base_query(db: Session):
         q = q.filter(User.gov_suspended.is_(False))
     if "gov_verification_status" in table_columns("properties"):
         q = q.filter(Property.gov_verification_status.in_(_MARKETPLACE_GOV_STATUSES))
+    if "sui_identity_hash" in table_columns("properties"):
+        q = q.filter(
+            Property.sui_identity_hash.isnot(None),
+            Property.sui_identity_hash != "",
+        )
     return q
 
 
