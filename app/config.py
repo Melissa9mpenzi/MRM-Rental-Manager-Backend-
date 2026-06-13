@@ -39,9 +39,9 @@ class Settings(BaseSettings):
     # Skip DB migration checks on API boot (faster reload; run python -m app.utils.init_db when schema changes)
     skip_startup_migrations: bool = False
 
-    # Database — Neon / Postgres (set DATABASE_URL in .env)
-    # Example: postgresql+psycopg2://USER:PASSWORD@ep-xxx.region.aws.neon.tech/neondb?sslmode=require
-    database_url: str = "postgresql+psycopg2://user:password@localhost:5432/rental_manager_db?sslmode=require"
+    # Database — set DATABASE_URL in .env (Neon Postgres in production).
+    # Local dev without .env uses SQLite so the API works without a local Postgres install.
+    database_url: str = "sqlite:///./rental_manager.db"
 
     # Postgres: schema for ORM tables. Production Neon uses "public" (see .env.example).
     # Use "rental_mgr" only when you created tables in that schema via init_db.

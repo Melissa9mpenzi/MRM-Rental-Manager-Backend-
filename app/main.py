@@ -223,11 +223,26 @@ class CorsFallbackMiddleware(BaseHTTPMiddleware):
 
         try:
             response = await call_next(request)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             logging.getLogger("uvicorn.error").exception("Unhandled error")
+            detail = "Internal server error"
+            status_code = 500
+            try:
+                from sqlalchemy.exc import OperationalError
+
+                if isinstance(exc, OperationalError) or (
+                    exc.__cause__ and isinstance(exc.__cause__, OperationalError)
+                ):
+                    detail = (
+                        "Database unavailable. Start PostgreSQL or set DATABASE_URL in .env "
+                        "(copy .env.example). For local dev, restart the API to use SQLite."
+                    )
+                    status_code = 503
+            except Exception:  # noqa: BLE001
+                pass
             response = JSONResponse(
-                status_code=500,
-                content={"success": False, "detail": "Internal server error"},
+                status_code=status_code,
+                content={"success": False, "detail": detail},
             )
 
         if _origin_allowed(origin):
